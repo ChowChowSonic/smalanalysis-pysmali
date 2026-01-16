@@ -2,11 +2,12 @@
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
 
+import logging
 import re
 import os
-
 import sys
 import zipfile
+import warnings
 
 import smalanalysis.smali.SmaliObject
 from smalanalysis.smali import ComparisonIgnores
@@ -130,7 +131,19 @@ class SmaliProject(object):
 
         return 0
 
-    def parseProject(self, folder, package=None, skiplists=None, includelist=None, include_unpackaged=False):
+    def parseProject(self, folder, package=None, skiplists=None, includelist=None, include_unpackaged=False, use_pysmali=True):
+        """
+        Parse a project from a folder or ZIP file containing smali files.
+        
+        Args:
+            folder: Path to the folder or ZIP file containing smali files
+            package: Optional package name to filter classes
+            skiplist: List of files containing patterns to skip
+            includelist: List of files containing patterns to include
+            include_unpackaged: If True, include classes not in the specified package
+            use_pysmali: If True, use the pysmali-based parser (faster and more reliable).
+                        If False, fall back to the legacy regex-based parser.
+        """
         skips = None
         includes = None
         if skiplists is not None:
@@ -145,70 +158,74 @@ class SmaliProject(object):
         if os.path.exists(folder):
             if os.path.isfile(folder):
                 # This is a ZIP
-                zp = zipfile.ZipFile(folder, 'r')
-                SmaliProject.parseZipLoop(zp, self, package, skips=skips, includes=includes,
-                                          include_unpackaged=include_unpackaged)
+                with zipfile.ZipFile(folder, 'r') as zp:
+                    self._parse_zip_project(zp, package, skips, includes, include_unpackaged, use_pysmali)
             else:
                 print("Parsing folder not supported anymore. Please use archive mode.")
                 # SmaliProject.parseFolderLoop(folder, folder, self, package, skips=skips, includes=includes, include_unpackaged = includeUnpackaged)
         else:
             print("File {} not found!".format(folder))
 
-    @staticmethod
-    def parseZipLoop(zp, target, package=None, skips=None, includes=None, include_unpackaged=False):
+    def _parse_zip_project(self, zp, package, skips, includes, include_unpackaged, use_pysmali):
+        """
+        Parse a project from a ZIP file using pysmali.
+        
+        Args:
+            zp: ZipFile object
+            package: Optional package name to filter classes
+            skips: Set of patterns to skip
+            includes: Set of patterns to include
+            include_unpackaged: If True, include classes not in the specified package
+            use_pysmali: Whether to use pysmali parser
+        """
         classes = {}
         inner_classes = []
-
+        # First, process all .smali files
+        failed, successful = 0,0
         for n in zp.namelist():
-            op = SmaliProject.keepThisFile(n, package, includes, skips, include_unpackaged)
+            op = self.keepThisFile(n, package, includes, skips, include_unpackaged) 
+            if op == 1:  # This is a smali class file
+                try:
+                    with zp.open(n) as f:
+                        try:
+                            ccontent = f.read().decode('utf-8')
+                        except UnicodeDecodeError:
+                            ccontent = f.read().decode('latin-1')
+                        
+                        cls = self.parseClass(ccontent, use_pysmali=use_pysmali)
+                        #print(str(cls))
+                        if cls is None:
+                            failed+=1
+                            continue
+                        cls.parent = self
+                        successful+=1
 
-            if op == 1:
-                ccontent = "".join(map(chr, zp.read(n)))
-                cls = SmaliProject.parseClass(ccontent)
-                cls.parent = target
-
-                m2 = cls.name[1:-1].split("$")
-                if len(m2) > 1 and m2[0][-1] != '/':
-                    inner_classes.append((cls, m2[0], m2[1:]))
-                else:
-                    classes[cls.name[1:-1]] = cls
-                    target.addClass(cls)
-
-            elif op == 2:
-                ccontent = "".join(map(chr, zp.read(n)))
-                target.parseRessource(ccontent)
-
-        # Deal with inner classes now
-        looplevel = 0
-        processed_at_least_one = True
-
-        while processed_at_least_one:
-            processed_at_least_one = False
-            looplevel += 1
-
-            for e in inner_classes:
-                if e[1] not in classes:
-                    missing_class = smalanalysis.smali.SmaliObject.SmaliClass(e[1])
-                    missing_class.name = "L{};".format(e[1])
-                    classes[e[1]] = missing_class
-                    target.addClass(missing_class)
-
-                targetclass = classes[e[1]]
-                # inner_class_path = list(e[2][:-1])
-
-                if len(e[2]) == looplevel:
-                    # while len(inner_class_path) > 0:
-                        # newLevel = inner_class_path.pop()
-
-                        # if newLevel not in targetclass.innerclasses:
-                        #     missing_class = smali.SmaliObject.SmaliClass(e[1])
-                        #     missing_class.name = "L{}{};".format(targetclass.name[1:-1], newLevel)
-                        #     targetclass.innerclasses[newLevel] = missing_class
-
-                    targetclass.innerclasses[e[2][-1]] = e[0]
-                    e[0].parent = targetclass
-                    e[0].innername = '$'.join(e[2])
-                    processed_at_least_one = True
+                        # Handle inner classes
+                        m2 = cls.name[1:-1].split("$")
+                        if len(m2) > 1 and m2[0][-1] != '/':
+                            inner_classes.append((cls, m2[0], m2[1:]))
+                        else:
+                            classes[cls.name[1:-1]] = cls
+                            self.addClass(cls)
+                            
+                except Exception as e:
+                    import warnings
+                    warnings.warn(
+                        f"Error parsing {n}: {str(e)}. Skipping file.",
+                        RuntimeWarning
+                    )
+                    continue
+                    
+            elif op == 2:  # This is a resource file
+                with zp.open(n) as f:
+                    try:
+                        ccontent = f.read().decode('utf-8')
+                    except UnicodeDecodeError:
+                        ccontent = f.read().decode('latin-1')
+                    self.parseRessource(ccontent)
+        print(f"Failed to parse {failed} classes, with {successful} successfully parsed classes")
+        # Process inner classes
+        self._process_inner_classes(classes, inner_classes)
 
     def searchClass(self, clazzName):
         searchfor = clazzName
@@ -348,7 +365,41 @@ class SmaliProject(object):
         return ret
 
     @staticmethod
-    def parseClass(ccontent):
+    def parseClass(ccontent, use_pysmali=True):
+        """
+        Parse a smali class from its content.
+        
+        Args:
+            ccontent: The smali code to parse
+            use_pysmali: If True, use the pysmali-based parser (faster and more reliable).
+                        If False, fall back to the legacy regex-based parser.
+        """
+        if use_pysmali:
+            try:
+                from .pysmali_parser import parse_smali
+                return parse_smali(ccontent)
+            except ImportError:
+                # Fall back to legacy parser if pysmali is not available
+                import warnings
+                warnings.warn(
+                    "pysmali not available, falling back to legacy parser. "
+                    "Install with: pip install pysmali",
+                    RuntimeWarning
+                )
+            except Exception as e:
+                # Fall back to legacy parser on any other error
+                import warnings
+                warnings.warn(
+                    f"Error using pysmali parser: {e}. Falling back to legacy parser.",
+                    RuntimeWarning
+                )
+        print("Using legacy parser")
+        # Fall back to legacy parser if pysmali is not available or fails
+        return SmaliProject._legacy_parse_class(ccontent)
+    
+    @staticmethod
+    def _legacy_parse_class(ccontent):
+        """Legacy regex-based parser for backward compatibility."""
         clazz = smalanalysis.smali.SmaliObject.SmaliClass(None)
 
         # Class declaration
@@ -448,13 +499,53 @@ class SmaliProject(object):
 
         return clazz
 
-    def parseAddClass(self, file):
-        fp = open(file, 'r')
-        ccontent = fp.read()
-        fp.close()
-        cls = SmaliProject.parseClass(ccontent)
-        cls.parent = self
-        self.addClass(cls)
+    def _process_inner_classes(self, classes, inner_classes):
+        """
+        Process inner classes and link them to their parent classes.
+        
+        Args:
+            classes: Dictionary of class names to class objects
+            inner_classes: List of (inner_class, parent_name, name_parts) tuples
+        """
+        looplevel = 0
+        processed_at_least_one = True
+
+        while processed_at_least_one:
+            processed_at_least_one = False
+            looplevel += 1
+
+            for e in inner_classes:
+                if e[1] not in classes:
+                    missing_class = smalanalysis.smali.SmaliObject.SmaliClass(e[1])
+                    missing_class.name = "L{};".format(e[1])
+                    classes[e[1]] = missing_class
+                    self.addClass(missing_class)
+
+                targetclass = classes[e[1]]
+
+                if len(e[2]) == looplevel:
+                    targetclass.innerclasses[e[2][-1]] = e[0]
+                    e[0].parent = targetclass
+                    e[0].innername = '$'.join(e[2])
+                    processed_at_least_one = True
+                    
+    def parseAddClass(self, file, use_pysmali=True):
+        """
+        Parse a smali class from a file and add it to the project.
+        
+        Args:
+            file: Path to the smali file to parse
+            use_pysmali: If True, use the pysmali-based parser (faster and more reliable).
+                        If False, fall back to the legacy regex-based parser.
+        """
+        with open(file, 'r', encoding='utf-8') as fp:
+            ccontent = fp.read()
+        cls = SmaliProject.parseClass(ccontent, use_pysmali=use_pysmali)
+        if cls:
+            cls.parent = self
+            self.addClass(cls)
+        else: 
+            print("skipping empty class")
 
     # def __eq__(self, other):
     #
