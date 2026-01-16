@@ -6,6 +6,7 @@ import re
 from smalanalysis.smali import ComparisonIgnores, ChangesTypes
 import smalanalysis.smali.SmaliProject
 import smalanalysis.smali.SmaliObject
+from smalanalysis.smali.pysmali_parser import access_flags_to_list
 
 NOT_SAME_NAME = 'NOT_SAME_NAME'
 NOT_SAME_RETURN_TYPE = 'NOT_SAME_RETURN_TYPE'
@@ -34,7 +35,7 @@ jumps_pattern = re.compile(':[a-zA-Z0-9_\\-]+')
 local_registers_pattern = re.compile('v[0-9]+')
 param_registers_pattern = re.compile('p[0-9]+')
 
-inner_anonymous_class_reference_matcher = re.compile("\$[0-9$]+;")
+inner_anonymous_class_reference_matcher = re.compile("\\$[0-9$]+;")
 
 def compareStringSets(m1, m2):
     return len(m1 ^ m2) == 0
@@ -165,8 +166,8 @@ class SmaliAnnotableModifiable(object):
     def addModifiersFromList(self, modifiers):
         if modifiers is None:
             return
-
-        for m in modifiers:
+        mod2 = access_flags_to_list(modifiers)
+        for m in mod2:
             self.modifiers.add(m.strip())
 
     def isField(self):
@@ -464,7 +465,7 @@ def compareWithMapping(old, new, mappings):
     oldres = old
 
     if mappings is not None and "$" in old:
-        oldres = "L{};".format(re.match("(\[*?)L(.*?)(\$(.*))?;", old).group(2))
+        oldres = "L{};".format(re.match("(\\[*?)L(.*?)(\\$(.*))?;", old).group(2))
 
     if mappings is not None and oldres in mappings:
         if(mappings[oldres] == new):
