@@ -68,15 +68,14 @@ try:
 
     diff = old.differences(new, [])
     for x in diff: 
-        for y in x[0][0].methodsComparison(x[0][1], []):
-            for z in y:
-                for fn in z: 
-                    if fn is None:
-                        continue
-                    try: 
-                        print(x[0][0].getName().replace(";", "").replace("/", ".")[2:]+"."+fn.getSignature().replace(";", ","))
-                    except: 
-                            pass
-except Metrics.ProjectObfuscatedException:
+        (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
+        for fn in diffs: 
+            differ = fn[0]
+            if differ is None: 
+                differ = fn[1]
+            if differ is None:
+                continue
+            print(x[0][0].getName().replace(";", "").replace("/", ".")[2:]+"."+differ.getSignature().replace(";", ","))
+except Metrics.ProjectObfuscatedException:             
     print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
     sys.exit(1)
