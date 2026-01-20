@@ -1,0 +1,3 @@
+apktool d "$1" -o smali
+zip -r smali ${2}.zip
+rm -rf smali
