@@ -18,22 +18,20 @@ Some incoherencies may exists in this `README` and subsequent documentation as s
 
 ## Requirements
 
-Tested on MacOS. Should run well on UNIX/Linux systems. Definitively not work on Windows systems.
+Originally Tested on MacOS. Should run well on UNIX/Linux systems.
+More recently tested on Windows, can verify it works there (so long as you have some way of disassembling the app into smali code).
 
 You will need:
 
 - a working **python3** environement;
-- a working Java installation to run the [baksmali](https://github.com/JesusFreke/smali) tool (a copy of version 2.2.1 is present in this repo, it remain the property of its author).;
-  - This tools works with version 2.2.1 of baksmali. No test has been done on other versions.
-- a working version of the `aapt` tool in your system `PATH`.
+- a working version of the `apktool` tool in your system `PATH`.
 
 ## Installation
 
 In order ot make this tool work, you will require a working installation of **Python 3.6**.
 Moreover, the following tools should be installed and present in the system `PATH` in order to work:
 
-- JRE
-- Android `aapt` command
+- Android `apktool` command
 
 Then, to proceed with the installation using pip:
 
@@ -43,12 +41,10 @@ pip install git+https://github.com/v-m/smalanalysis.git
 
 ## Disassembling
 
-The `sa-disassemble` command is a short hand script to invoke the
-baksmali tool offered by @JesusFreke. To sum up, it simply:
+The `sa-disassemble` command is a short hand script to invoke the `apktool` tool offered by @iBotPeaches. To sum up, it simply:
 
-- Extract the dexes classes from `apk` file;
-- Feed these to the `baksmali` tool;
-- Produce a ZIP archive containing all the smali files.
+- Extract the dexes classes from `apk` file using the `apktool` tool;
+- Produce a ZIP archive containing all the smali files (just zip the smali folder).
 
 ⚠️ This archive is the expected input format for the scripts present in this repo (as it mainly work on smali).
 
@@ -96,5 +92,14 @@ two APKs. Here is how to run the differences computation between two versions:
 The tool `sa-metrics` can be used to compute different evolution metrics between two versions of an app.
 It works on output archived produced by the `sa-disassemble` tool.
 Same inclusion/exclusion parameters can be passed to this function.
+**Usage:**
+`sa-metrics <old_apk.smali> <new_apk.smali> --use-pysmali`
 
 [Learn more in the wiki page.](../../wiki/Diffing-Metrics)
+
+## Listing changed functions
+The tool `sa-list` can be used to list all the changed functions between two versions of an app.
+It works on output archived produced by the `sa-disassemble` tool.
+Same inclusion/exclusion parameters can be passed to this function.
+**Usage:**
+`sa-list <old_apk.smali> <new_apk.smali> --use-pysmali`
