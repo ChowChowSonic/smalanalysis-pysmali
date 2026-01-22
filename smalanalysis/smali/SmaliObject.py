@@ -639,6 +639,8 @@ class SmaliClass(SmaliAnnotableModifiable):
         self.source = param
 
     def methodsComparison(self, other, ignores, mappings=None):
+        if self is None or other is None: 
+            return ([], [])
         mself = list(self.methods)
         mother = list(other.methods)
         mttemp = list()

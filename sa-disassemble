@@ -1,3 +1,4 @@
-apktool d "$1" -o smali
-zip -r smali ${2}.zip
-rm -rf smali
+#!/usr/bin/env bash 
+apktool d "$1" -o $$ 
+zip -r "$(dirname $(realpath $1))/zippedsmali.zip" $$
+rm -rf ./$$ 

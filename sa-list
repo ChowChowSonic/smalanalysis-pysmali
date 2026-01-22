@@ -68,6 +68,8 @@ try:
 
     diff = old.differences(new, [])
     for x in diff: 
+        if x is None or x[0] is None or x[0][0] is None: 
+            continue 
         (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
         for fn in diffs: 
             differ = fn[0]
