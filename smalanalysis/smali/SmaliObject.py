@@ -447,10 +447,10 @@ class SmaliMethod(SmaliWithLines):
         return True
 
     def getSignature(self):
-        return ('%s(%s)%s'%(self.name, ''.join(self.params), self.ret)).strip()
+        return ('%s %s(%s)'%(self.ret, self.name, ''.join(self.params))).strip()
 
     def getFullSignature(self):
-        return '%s.%s'%('?' if self.parent is None else self.parent.getBaseName().replace('/', '.'), self.getSignature())
+        return '%s: %s'%('?' if self.parent is None else self.parent.getBaseName().replace('/', '.'), self.getSignature())
 
 
 class SmaliAnnotation(SmaliWithLines):
