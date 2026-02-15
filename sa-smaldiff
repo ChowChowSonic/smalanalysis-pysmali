@@ -1,0 +1,112 @@
+#!/usr/bin/env python
+
+# Computing Metrics
+# Author: Vincenzo Musco (http://www.vmusco.com)
+# Creation date: 2017-09-15
+import argparse
+import sys
+import smalanalysis
+import logging 
+import difflib
+from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
+
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
+
+parser = argparse.ArgumentParser(description='Compute evolution metrics between two smali versions.')
+parser.add_argument('smaliv1', type=str,
+                    help='Version 1 folder containing smali files')
+parser.add_argument('smaliv2', type=str,
+                    help='Version 2 folder containing smali files')
+parser.add_argument('--verbose', '-v', action='store_true',
+                    help='Show metrics details')
+parser.add_argument('--onlyapppackage', '-P', action='store_true',
+                    help='Includes only classes in the app package specified')
+parser.add_argument('--fulllinesofcode', '-f', action='store_true',
+                    help='Show full lines instead of opcodes for differences')
+parser.add_argument('--aggregateoperators', '-a', action='store_true',
+                    help='Aggregate the operator by their first keywork.')
+parser.add_argument('--include-unpackaged', '-U', action='store_true',
+                    help='Includes classes which are not in a package')
+parser.add_argument('--exclude-lists', '-e', type=str, nargs='*',
+                    help='Files containing excluded list')
+parser.add_argument('--include-lists', '-i', type=str, nargs='*',
+                    help='Files containing included list')
+parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
+                    help='Do not split metrics for inner/outer classes')
+parser.add_argument('--no-pysmali', action='store_true',
+                    help='Do not use the pysmali parser (use legacy parser instead)')
+
+args = parser.parse_args()
+
+pkg = None
+if args.onlyapppackage:
+    pkg = args.pkg
+    if args.verbose:
+        print("Including classes only in %s" % pkg)
+
+if args.verbose and args.exclude_lists:
+    print("Ignoring classes includes in these files: %s" % args.exclude_lists)
+
+if args.aggregateoperators and args.fulllinesofcode:
+    print("Aggregation and full lines cannot be enabled at the same time!")
+    sys.exit(1)
+
+try:
+    old = SmaliProject.SmaliProject()
+    old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged, use_pysmali=not args.no_pysmali)
+    #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    mold, moldin = Metrics.countMethodsInProject(old)
+
+    new = SmaliProject.SmaliProject()
+    new.parseProject(args.smaliv2, pkg, args.exclude_lists, args.include_lists, 
+                    include_unpackaged=args.include_unpackaged, use_pysmali=not args.no_pysmali)
+    #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    mnew, mnewin = Metrics.countMethodsInProject(new)
+
+    diff = old.differences(new, [])
+    for x in diff: 
+        if x is None or x[0] is None or x[0][0] is None: 
+            continue 
+        (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
+        for fn in diffs: 
+            old_method = fn[0]
+            new_method = fn[1]
+            change_type = fn[2]
+            
+            # Skip if we don't have both versions for comparison
+            if old_method is None or new_method is None:
+                if old_method:
+                    print(f"REMOVED: {old_method.getFullSignature()}")
+                elif new_method:
+                    print(f"ADDED: {new_method.getFullSignature()}")
+                continue
+                
+            # Get the lines from both methods
+            old_lines = old_method.getCleanLines()
+            new_lines = new_method.getCleanLines()
+            
+            print(f"CHANGED: {old_method.getFullSignature()}")
+            print("=" * 80)
+            
+            # Generate unified diff
+            diff_lines = list(difflib.unified_diff(
+                old_lines, 
+                new_lines, 
+                fromfile=f"old/{old_method.getFullSignature()}",
+                tofile=f"new/{new_method.getFullSignature()}",
+                lineterm=''
+            ))
+            
+            if diff_lines:
+                for line in diff_lines:
+                    print('\t',line)
+            else:
+                print("No textual differences found (may be structural/semantic changes only)")
+            
+            print("=" * 80)
+            print()
+except Metrics.ProjectObfuscatedException:             
+    print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
+    sys.exit(1)
