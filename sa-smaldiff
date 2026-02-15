@@ -10,6 +10,26 @@ import logging
 import difflib
 from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
 
+# ANSI color codes for better diff visualization
+class Colors:
+    RED = '\033[91m'      
+    GREEN = '\033[92m'    
+    CYAN = '\033[96m'     
+    YELLOW = '\033[93m'   
+    BLUE = '\033[94m'     
+    BOLD = '\033[1m'      
+    RESET = '\033[0m'     
+
+def supports_color():
+    """Check if the terminal supports color output"""
+    return sys.stdout.isatty()
+
+def colorize(text, color):
+    """Apply color to text if terminal supports it"""
+    if supports_color():
+        return f"{color}{text}{Colors.RESET}"
+    return text
+
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
 parser = argparse.ArgumentParser(description='Compute evolution metrics between two smali versions.')
@@ -70,7 +90,7 @@ try:
         if x is None or x[0] is None or x[0][0] is None: 
             continue 
         (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
-        for fn in diffs: 
+        for fn in diffs:
             old_method = fn[0]
             new_method = fn[1]
             change_type = fn[2]
@@ -78,17 +98,19 @@ try:
             # Skip if we don't have both versions for comparison
             if old_method is None or new_method is None:
                 if old_method:
-                    print(f"REMOVED: {old_method.getFullSignature()}")
+                    print(colorize(f"REMOVED: {old_method.getFullSignature()}", Colors.RED))
                 elif new_method:
-                    print(f"ADDED: {new_method.getFullSignature()}")
+                    print(colorize(f"ADDED: {new_method.getFullSignature()}", Colors.GREEN))
+                print(colorize("-" * 80, Colors.CYAN))
+                print()
                 continue
                 
             # Get the lines from both methods
             old_lines = old_method.getCleanLines()
             new_lines = new_method.getCleanLines()
             
-            print(f"CHANGED: {old_method.getFullSignature()}")
-            print("=" * 80)
+            print(colorize(f"CHANGED: {old_method.getFullSignature()}", Colors.BLUE))
+            print(colorize("=" * 80, Colors.CYAN))
             
             # Generate unified diff
             diff_lines = list(difflib.unified_diff(
@@ -96,16 +118,26 @@ try:
                 new_lines, 
                 fromfile=f"old/{old_method.getFullSignature()}",
                 tofile=f"new/{new_method.getFullSignature()}",
-                lineterm=''
+                lineterm='',
+                n=0
             ))
             
             if diff_lines:
                 for line in diff_lines:
-                    print('\t',line)
+                    if line.startswith('---') or line.startswith('+++'):
+                        print(colorize(line, Colors.CYAN))
+                    elif line.startswith('-'):
+                        print(colorize(f"- {line[1:]}", Colors.RED))
+                    elif line.startswith('+'):
+                        print(colorize(f"+ {line[1:]}", Colors.GREEN))
+                    elif line.startswith('@@'):
+                        print(colorize(line, Colors.YELLOW))
+                    else:
+                        print(f"  {line}")
             else:
                 print("No textual differences found (may be structural/semantic changes only)")
             
-            print("=" * 80)
+            print(colorize("=" * 80, Colors.CYAN))
             print()
 except Metrics.ProjectObfuscatedException:             
     print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
