@@ -1,0 +1,177 @@
+#!/usr/bin/env python
+
+# Computing Metrics
+# Author: Vincenzo Musco (http://www.vmusco.com)
+# Creation date: 2017-09-15
+import argparse
+import sys
+import logging 
+import re
+from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
+from smalanalysis.smali.SmaliInstructionMatchers import INVOKE_SUPER, INVOKE_VIRTUAL_DIRECT
+
+# ANSI color codes for better diff visualization
+class Colors:
+    RED = '\033[91m'      
+    GREEN = '\033[92m'    
+    CYAN = '\033[96m'     
+    YELLOW = '\033[93m'   
+    BLUE = '\033[94m'     
+    BOLD = '\033[1m'      
+    RESET = '\033[0m'     
+
+def supports_color():
+    """Check if the terminal supports color output"""
+    return sys.stdout.isatty()
+
+def colorize(text, color):
+    """Apply color to text if terminal supports it"""
+    if supports_color():
+        return f"{color}{text}{Colors.RESET}"
+    return text
+
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
+
+# Patterns for all invoke types in smali
+INVOKE_PATTERNS = [
+    re.compile(r'^\s*invoke-static(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-virtual(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-direct(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-interface(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-super(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-polymorphic(/range)?\s*\{[^}]*\},\s*(.*?)->(.*?)\((.*?)\)(.*)$'),
+    re.compile(r'^\s*invoke-custom(/range)?\s*\{[^}]*\},\s*(.*?)\((.*?)\)(.*)$'),
+]
+
+def extract_invoked_functions(method):
+    """Extract all functions invoked by a method"""
+    if method is None:
+        return set()
+    
+    invoked_functions = set()
+    lines = method.getCleanLines()
+    
+    for line in lines:
+        line = line.strip()
+        for pattern in INVOKE_PATTERNS:
+            match = pattern.match(line)
+            if match:
+                groups = match.groups()
+                if len(groups) >= 3:
+                    # For invoke-custom, the format is different
+                    if 'invoke-custom' in pattern.pattern:
+                        # invoke-custom has format: invoke-custom {registers}, method_name(method_params)return_type
+                        method_call = groups[0]
+                        params = groups[1]
+                        return_type = groups[2] if len(groups) > 2 else ''
+                        # Format as: method_name(params)return_type
+                        full_signature = f"{method_call}({params}){return_type}"
+                    else:
+                        # Standard invoke format: class->method(params)return_type
+                        # groups[0] is the /range part (or None), groups[1] is class, groups[2] is method, groups[3] is params, groups[4] is return type
+                        range_part = groups[0]
+                        class_name = groups[1].strip() if len(groups) > 1 else ''
+                        method_name = groups[2].strip() if len(groups) > 2 else ''
+                        params = groups[3].strip() if len(groups) > 3 else ''
+                        return_type = groups[4].strip() if len(groups) > 4 else ''
+                        full_signature = f"{class_name}->{method_name}({params}){return_type}"
+                    
+                    invoked_functions.add(full_signature)
+                break
+    
+    return invoked_functions
+
+def print_invoked_functions_diff(old_method, new_method):
+    """Print the diff of invoked functions between old and new methods in concise format"""
+    old_invoked = extract_invoked_functions(old_method)
+    new_invoked = extract_invoked_functions(new_method)
+    
+    # Old version line
+    old_list = ", ".join(sorted(old_invoked)) if old_invoked else "none"
+    print(f"{old_method.getFullSignature()}: [{old_list}]")
+    
+    # New version line  
+    new_list = ", ".join(sorted(new_invoked)) if new_invoked else "none"
+    print(f"{new_method.getFullSignature()}: [{new_list}]")
+    print()
+
+parser = argparse.ArgumentParser(description='Compute evolution metrics between two smali versions.')
+parser.add_argument('smaliv1', type=str,
+                    help='Version 1 folder containing smali files')
+parser.add_argument('smaliv2', type=str,
+                    help='Version 2 folder containing smali files')
+parser.add_argument('pkg', type=str,
+                    help='The package you want to view the diff of')
+parser.add_argument('--verbose', '-v', action='store_true',
+                    help='Show metrics details')
+parser.add_argument('--onlyapppackage', '-P', action='store_true',
+                    help='Includes only classes in the app package specified')
+parser.add_argument('--fulllinesofcode', '-f', action='store_true',
+                    help='Show full lines instead of opcodes for differences')
+parser.add_argument('--aggregateoperators', '-a', action='store_true',
+                    help='Aggregate the operator by their first keywork.')
+parser.add_argument('--include-unpackaged', '-U', action='store_true',
+                    help='Includes classes which are not in a package')
+parser.add_argument('--exclude-lists', '-e', type=str, nargs='*',
+                    help='Files containing excluded list')
+parser.add_argument('--include-lists', '-i', type=str, nargs='*',
+                    help='Files containing included list')
+parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
+                    help='Do not split metrics for inner/outer classes')
+parser.add_argument('--no-pysmali', action='store_true',
+                    help='Do not use the pysmali parser (use legacy parser instead)')
+
+args = parser.parse_args()
+
+pkg = None
+if args.onlyapppackage:
+    pkg = args.pkg
+    if args.verbose:
+        print("Including classes only in %s" % pkg)
+
+if args.verbose and args.exclude_lists:
+    print("Ignoring classes includes in these files: %s" % args.exclude_lists)
+
+if args.aggregateoperators and args.fulllinesofcode:
+    print("Aggregation and full lines cannot be enabled at the same time!")
+    sys.exit(1)
+
+try:
+    old = SmaliProject.SmaliProject()
+    old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged, use_pysmali=not args.no_pysmali)
+    #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    mold, moldin = Metrics.countMethodsInProject(old)
+
+    new = SmaliProject.SmaliProject()
+    new.parseProject(args.smaliv2, pkg, args.exclude_lists, args.include_lists, 
+                    include_unpackaged=args.include_unpackaged, use_pysmali=not args.no_pysmali)
+    #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    mnew, mnewin = Metrics.countMethodsInProject(new)
+
+    diff = old.differences(new, [])
+    for x in diff: 
+        if x is None or x[0] is None or x[0][0] is None: 
+            continue 
+        (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
+        for fn in diffs:
+            old_method = fn[0]
+            new_method = fn[1]
+            change_type = fn[2]
+            
+            # Skip if we don't have both versions for comparison (only show changed methods)
+            if old_method is None or new_method is None:
+                continue
+                
+            # Get the lines from both methods
+            old_lines = old_method.getCleanLines()
+            new_lines = new_method.getCleanLines()
+            
+            print(colorize(f"CHANGED: {old_method.getFullSignature()}", Colors.BLUE))
+            
+            # Add invoked functions analysis (removing textual diff)
+            print_invoked_functions_diff(old_method, new_method)
+except Metrics.ProjectObfuscatedException:             
+    print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
+    sys.exit(1)

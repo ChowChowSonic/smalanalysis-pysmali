@@ -8,7 +8,7 @@ apktool d $1 -o old 1>&2 && zip -FSr -9 old.zip ./old/ 1>&2 && rm -rf old &
 apktool d $2 -o new 1>&2 && zip -FSr -9 new.zip ./new/ 1>&2 && rm -rf new &
 wait; 
 if [[ $3 != "" ]]; then 
-	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-smaldiff old.zip new.zip $3 --onlyapppackage
+	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip $3 --onlyapppackage
 else 
-	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-smaldiff old.zip new.zip; 
+	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip; 
 fi
