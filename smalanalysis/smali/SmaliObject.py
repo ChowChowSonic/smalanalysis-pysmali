@@ -6,7 +6,39 @@ import re
 from smalanalysis.smali import ComparisonIgnores, ChangesTypes
 import smalanalysis.smali.SmaliProject
 import smalanalysis.smali.SmaliObject
-from smalanalysis.smali.pysmali_parser import access_flags_to_list
+
+def access_flags_to_list(flags):
+    """Convert access flags integer to a list of string modifiers."""
+    if not isinstance(flags, int):
+        return []
+    
+    # Common access flags in smali
+    flag_map = {
+        0x1: 'public',
+        0x2: 'private',
+        0x4: 'protected',
+        0x8: 'static',
+        0x10: 'final',
+        0x20: 'synchronized',
+        0x40: 'volatile',
+        0x80: 'transient',
+        0x100: 'native',
+        0x200: 'interface',
+        0x400: 'abstract',
+        0x1000: 'synthetic',
+        0x2000: 'annotation',
+        0x4000: 'enum',
+        0x8000: 'unused',
+        0x10000: 'constructor',
+        0x20000: 'declared_synchronized',
+    }
+    
+    modifiers = []
+    for flag_value, flag_name in flag_map.items():
+        if flags & flag_value:
+            modifiers.append(flag_name)
+    
+    return modifiers
 
 NOT_SAME_NAME = 'NOT_SAME_NAME'
 NOT_SAME_RETURN_TYPE = 'NOT_SAME_RETURN_TYPE'

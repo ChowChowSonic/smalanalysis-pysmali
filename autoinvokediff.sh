@@ -10,5 +10,5 @@ wait;
 if [[ $3 != "" ]]; then 
 	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip $3 --onlyapppackage
 else 
-	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip; 
+	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip all; 
 fi
