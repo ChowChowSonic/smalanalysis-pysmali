@@ -7,10 +7,10 @@ import argparse
 import sys
 import os
 import pathlib
-from tabnanny import verbose
 import smalanalysis
 import logging 
 from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
+import re
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
@@ -39,7 +39,8 @@ parser.add_argument('--no-pysmali', action='store_true',
                     help='Do not use the pysmali parser (use legacy parser instead)')
 parser.add_argument('--filter-classes', '-F', type=str,
                     help='File containing list of functions to filter for (format: class_name: function_name, one per line)')
-
+parser.add_argument('--filter-instructions-regex', '-R', type=str,
+                    help='Regex pattern to filter instructions')
 args = parser.parse_args()
 
 def should_filter_function(class_name, method_name):
@@ -94,13 +95,24 @@ def write_function_to_file(method_obj, output_base_dir, version_name):
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write the method's smali code
-            f.write(f"# Method: {method_obj.getFullSignature()}\n")
+            if args.filter_instructions_regex:
+                f.write(f"# Method: {method_obj.getFullSignature()}\n")
+                f.write(f"# Filtered by regex: {args.filter_instructions_regex}\n")
+            else:
+                f.write(f"# Method: {method_obj.getFullSignature()}\n")
             
             # Get the method content - this depends on the smalanalysis library structure
             # We'll need to access the actual smali code from the method object
             if hasattr(method_obj, 'getLines'):
                 for line in method_obj.getLines(): 
-                    f.write(line+'\n')
+                    if args.filter_instructions_regex:
+                        try:
+                            if re.search(args.filter_instructions_regex, line):
+                                f.write(line+'\n')
+                        except re.error:
+                            pass
+                    else:
+                        f.write(line+'\n')
             elif hasattr(method_obj, 'toString'):
                 f.write(str(method_obj))
             else:
