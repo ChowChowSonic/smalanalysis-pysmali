@@ -7,6 +7,7 @@ import argparse
 import sys
 import logging 
 import re
+import os
 from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
 from smalanalysis.smali.SmaliInstructionMatchers import INVOKE_SUPER, INVOKE_VIRTUAL_DIRECT
 
@@ -30,7 +31,7 @@ def colorize(text, color):
         return f"{color}{text}{Colors.RESET}"
     return text
 
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
+logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
 # Patterns for all invoke types in smali
 INVOKE_PATTERNS = [
@@ -43,56 +44,225 @@ INVOKE_PATTERNS = [
     re.compile(r'^\s*invoke-custom(/range)?\s*\{[^}]*\},\s*(.*?)\((.*?)\)(.*)$'),
 ]
 
-def extract_invoked_functions(method):
+def extract_invoked_functions(method, zip_file_path=None):
     """Extract all functions invoked by a method"""
     if method is None:
         return set()
     
     invoked_functions = set()
-    lines = method.getCleanLines()
     
-    for line in lines:
-        line = line.strip()
-        for pattern in INVOKE_PATTERNS:
-            match = pattern.match(line)
-            if match:
-                groups = match.groups()
-                if len(groups) >= 3:
-                    # For invoke-custom, the format is different
-                    if 'invoke-custom' in pattern.pattern:
-                        # invoke-custom has format: invoke-custom {registers}, method_name(method_params)return_type
-                        method_call = groups[0]
-                        params = groups[1]
-                        return_type = groups[2] if len(groups) > 2 else ''
-                        # Format as: method_name(params)return_type
-                        full_signature = f"{method_call}({params}){return_type}"
-                    else:
-                        # Standard invoke format: class->method(params)return_type
-                        # groups[0] is the /range part (or None), groups[1] is class, groups[2] is method, groups[3] is params, groups[4] is return type
-                        range_part = groups[0]
-                        class_name = groups[1].strip() if len(groups) > 1 else ''
-                        method_name = groups[2].strip() if len(groups) > 2 else ''
-                        params = groups[3].strip() if len(groups) > 3 else ''
-                        return_type = groups[4].strip() if len(groups) > 4 else ''
-                        full_signature = f"{class_name}->{method_name}({params}){return_type}"
-                    
-                    invoked_functions.add(full_signature)
-                break
+    # Try to get the original smali file content from ZIP
+    try:
+            parent_class = method.parent
+            class_name = parent_class.name
+        
+            clean_class_name = class_name.rstrip(';')
+            if not clean_class_name.startswith('L'):
+                clean_class_name = 'L' + clean_class_name
+            if not clean_class_name.endswith(';'):
+                clean_class_name = clean_class_name + ';'
+            
+            # Convert Lcom/example/Class; to com/example/Class.smali
+            smali_path = clean_class_name[1:-1] + '.smali'
+            
+            # Try to read from ZIP file if provided
+            if zip_file_path:
+                import zipfile
+                with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                    # Loop over all .smali files in the ZIP
+                    for zip_file_info in zip_ref.filelist:
+                        zip_filename = zip_file_info.filename
+                        
+                        # Only process .smali files
+                        if not zip_filename.endswith('.smali'):
+                            continue
+                            
+                        try:
+                            with zip_ref.open(zip_filename) as file:
+                                file_content = file.read().decode('utf-8', errors='ignore')
+                                
+                                # Extract the method content from the file
+                                method_signature = method.getFullSignature()
+                                
+                                # Find the method in the file
+                                try:
+                                    method_pattern = rf'\.method.*{method.name}\s*\([^)]*\)\s*{method.ret}'
+                                    method_match = re.search(method_pattern, file_content, re.MULTILINE | re.DOTALL)
+                                except re.error as regex_error:
+                                    print(f"DEBUG: Regex error in method pattern: {regex_error}", file=sys.stderr)
+                                    continue
+                                
+                                if method_match:
+                                    # Get the method content (from .method to .end method)
+                                    method_start = method_match.start()
+                                    method_end = file_content.find('.end method', method_start)
+                                    if method_end != -1:
+                                        method_content = file_content[method_start:method_end]
+                                        
+                                        # Look for invoke patterns in the method content
+                                        invoke_patterns = [
+                                            r'invoke-static(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-virtual(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-direct(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-interface(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-super(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-polymorphic(/range)?\s*\{[^}]*\},\s*([^->\s]+)->([^()\s]*)\(([^)]*)\)([^;\s]*)',
+                                            r'invoke-custom(/range)?\s*\{[^}]*\},\s*([^\s(]*)\(([^)]*)\)([^;\s]*)',
+                                        ]
+                                        
+                                        for pattern in invoke_patterns:
+                                            try:
+                                                matches = re.finditer(pattern, method_content, re.MULTILINE)
+                                                for match in matches:
+                                                    groups = match.groups()
+                                                    if len(groups) >= 5:
+                                                        # Standard invoke format
+                                                        range_part = groups[0]
+                                                        class_name = groups[1].strip()
+                                                        method_name = groups[2].strip()
+                                                        params = groups[3].strip()
+                                                        return_type = groups[4].strip()
+                                                        full_signature = f"{class_name}->{method_name}({params}){return_type}"
+                                                        invoked_functions.add(full_signature)
+                                                    elif len(groups) >= 3:
+                                                        # invoke-custom format
+                                                        method_call = groups[1].strip()
+                                                        params = groups[2].strip()
+                                                        return_type = groups[3].strip() if len(groups) > 3 else ''
+                                                        full_signature = f"{method_call}({params}){return_type}"
+                                                        invoked_functions.add(full_signature)
+                                            except re.error as regex_error:
+                                                print(f"DEBUG: Regex error in invoke pattern: {regex_error}", file=sys.stderr)
+                                                continue
+                        except KeyError:
+                            continue  # File not found, try the next one
+            
+    except Exception as e:
+        # Debug: print the error to understand what's failing
+        print(f"DEBUG: Error in extract_invoked_functions: {e}", file=sys.stderr)
+        print(f"DEBUG: zip_file_path: {zip_file_path}", file=sys.stderr)
+        print(f"DEBUG: smali_path: {smali_path}", file=sys.stderr)
+        pass  # Silently ignore errors for cleaner output
     
     return invoked_functions
 
-def print_invoked_functions_diff(old_method, new_method):
-    """Print the diff of invoked functions between old and new methods in concise format"""
-    old_invoked = extract_invoked_functions(old_method)
-    new_invoked = extract_invoked_functions(new_method)
+def find_smali_file(smali_path):
+    """Find a smali file in the current directory structure"""
+    import os
+    # This is a simple implementation - you might need to adjust based on your directory structure
+    for root, dirs, files in os.walk('.'):
+        for file in files:
+            if file.endswith('.smali') and file == os.path.basename(smali_path):
+                full_path = os.path.join(root, file)
+                # Check if the full path matches the expected structure
+                if smali_path.replace('/', '\\') in full_path or smali_path in full_path:
+                    return full_path
+    return None
+
+def clean_signature(signature):
+    """Clean up a method signature for better readability"""
+    # Remove extra semicolons from class names
+    signature = signature.replace(';;', ';')
     
-    # Old version line
-    old_list = ", ".join(sorted(old_invoked)) if old_invoked else "none"
-    print(f"{old_method.getFullSignature()}: [{old_list}]")
+    # Split into parts for processing
+    if '->' in signature:
+        class_part, method_part = signature.split('->', 1)
+        
+        # Clean class name - ensure it has proper format
+        class_part = class_part.replace(';;', ';')
+        if not class_part.startswith('L'):
+            class_part = 'L' + class_part
+        if not class_part.endswith(';'):
+            class_part = class_part + ';'
+        
+        # Clean method part
+        if '(' in method_part and ')' in method_part:
+            method_name = method_part.split('(')[0]
+            params_and_return = method_part[method_part.find('('):]
+            
+            # Clean parameter types and return type
+            params_and_return = params_and_return.replace(';;', ';')
+            
+            return f"{class_part}->{method_name}{params_and_return}"
     
-    # New version line  
-    new_list = ", ".join(sorted(new_invoked)) if new_invoked else "none"
-    print(f"{new_method.getFullSignature()}: [{new_list}]")
+    return signature
+
+def format_java_signature(signature):
+    """Convert smali signature to Java-like format for better readability"""
+    # Remove extra semicolons from class names
+    signature = signature.replace(';;', ';')
+    
+    # Split into parts for processing
+    if '->' in signature:
+        class_part, method_part = signature.split('->', 1)
+        
+        # Clean class name
+        class_part = class_part.replace(';;', ';')
+        if class_part.startswith('L') and class_part.endswith(';'):
+            # Convert Lcom/example/Class; to com.example.Class
+            java_class = class_part[1:-1].replace('/', '.')
+        else:
+            java_class = class_part
+        
+        # Parse method part
+        if '(' in method_part and ')' in method_part:
+            method_name = method_part.split('(')[0]
+            params_part = method_part[method_part.find('(')+1:method_part.rfind(')')]
+            return_type = method_part[method_part.rfind(')')+1:]
+            
+            # Clean parameter types and return type
+            params_part = params_part.replace(';;', ';')
+            return_type = return_type.replace(';;', ';')
+            
+            # Convert parameter types to Java format
+            if params_part:
+                # Split parameters by semicolon and convert to comma-separated
+                param_list = [p.strip() for p in params_part.split(';') if p.strip()]
+                java_params = ', '.join(param_list)
+            else:
+                java_params = ""
+            
+            # Convert return type to Java format  
+            if return_type == 'V':
+                java_return = 'void'
+            elif return_type == 'Z':
+                java_return = 'boolean'
+            elif return_type == 'I':
+                java_return = 'int'
+            elif return_type == 'J':
+                java_return = 'long'
+            elif return_type.startswith('L') and return_type.endswith(';'):
+                java_return = return_type[1:-1].replace('/', '.')
+            else:
+                java_return = return_type.replace('/', '.')
+            
+            return f"{java_class}: {java_return} {method_name}({java_params})"
+    
+    return signature
+
+def format_invoked_list(invoked_functions):
+    """Format invoked functions list for better readability"""
+    if not invoked_functions:
+        return "none"
+    
+    # Convert to Java-like format and sort
+    formatted = sorted([format_java_signature(sig) for sig in invoked_functions])
+    
+    # Join with proper spacing
+    return ", ".join(formatted)
+
+def print_invoked_functions_diff(old_method, new_method, old_zip=None, new_zip=None):
+    """Print diff of invoked functions between old and new methods in concise format"""
+    old_invoked = extract_invoked_functions(old_method, old_zip)
+    new_invoked = extract_invoked_functions(new_method, new_zip)
+    
+    # Format the lists
+    old_list = format_invoked_list(old_invoked)
+    new_list = format_invoked_list(new_invoked)
+    
+    # Print with proper formatting
+    print(f"OLD {old_method.getFullSignature()}: [{old_list}]")
+    print(f"NEW {new_method.getFullSignature()}: [{new_list}]")
     print()
 
 parser = argparse.ArgumentParser(description='Compute evolution metrics between two smali versions.')
@@ -171,7 +341,7 @@ try:
             print(colorize(f"CHANGED: {old_method.getFullSignature()}", Colors.BLUE))
             
             # Add invoked functions analysis (removing textual diff)
-            print_invoked_functions_diff(old_method, new_method)
+            print_invoked_functions_diff(old_method, new_method, args.smaliv1, args.smaliv2)
 except Metrics.ProjectObfuscatedException:             
     print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
     sys.exit(1)

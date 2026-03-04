@@ -12,3 +12,4 @@ if [[ $3 != "" ]]; then
 else 
 	python C:/Users/joeya/Documents/NJIT-Resources/Research/apkcracking/anrAPK/smalanalysis/sa-invokediff old.zip new.zip all; 
 fi
+rm -rf old.zip new.zip 
