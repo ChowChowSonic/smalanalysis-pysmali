@@ -38,60 +38,29 @@ parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
 parser.add_argument('--no-pysmali', action='store_true',
                     help='Do not use the pysmali parser (use legacy parser instead)')
 parser.add_argument('--filter-classes', '-F', type=str,
-                    help='File containing list of classes to filter for (one class per line)')
+                    help='File containing list of functions to filter for (format: class_name: function_name, one per line)')
 
 args = parser.parse_args()
 
-# Create output directory structure
-output_dir = pathlib.Path(args.output_dir)
-new_dir = output_dir / "new"
-old_dir = output_dir / "old"
-
-if args.verbose:
-    print(f"Creating output directory: {output_dir}")
-
-# Create directories
-output_dir.mkdir(parents=True, exist_ok=True)
-new_dir.mkdir(parents=True, exist_ok=True)
-old_dir.mkdir(parents=True, exist_ok=True)
-
-if args.verbose and args.exclude_lists:
-    print("Ignoring classes includes in these files: %s" % args.exclude_lists)
-
-# Load filter classes if specified
-filter_classes = None
-if args.filter_classes:
-    try:
-        with open(args.filter_classes, 'r') as f:
-            filter_classes = set(line.strip() for line in f if line.strip() and not line.startswith('#'))
-        if args.verbose:
-            print(f"Loaded {len(filter_classes)} classes to filter from {args.filter_classes}")
-    except Exception as e:
-        print(f"Error reading filter classes file: {e}", file=sys.stderr)
-        sys.exit(1)
-
-def should_filter_class(class_name):
-    """Check if a class should be included based on filter classes"""
-    if filter_classes is None:
+def should_filter_function(class_name, method_name):
+    """Check if a function should be included based on filter functions"""
+    if filter_functions is None:
         return True  # No filtering applied
     
-    # Convert class name to various formats for matching
-    clean_class = class_name.rstrip(';')
-    if not clean_class.startswith('L'):
-        clean_class = 'L' + clean_class
-    if not clean_class.endswith(';'):
-        clean_class = clean_class + ';'
+    # Clean class name (remove L and ; if present)
+    clean_class = class_name.rstrip(';').lstrip('L')
     
-    # Check all possible formats
-    formats_to_check = [
-        class_name,
-        clean_class,
-        class_name.rstrip(';'),
-        clean_class[1:-1],  # Remove L and ;
-        clean_class.replace('/', '.')  # Java format
-    ]
+    # Create the filter key in the expected format: class_name: function_name
+    filter_key = f"{clean_class}: {method_name}"
     
-    return any(fmt in filter_classes or fmt.replace('/', '.') in filter_classes for fmt in formats_to_check)
+    if args.verbose:
+        print(f"DEBUG: Checking function '{filter_key}' against {len(filter_functions)} filter functions")
+        matched = filter_key in filter_functions
+        print(f"DEBUG: Match found: {matched}")
+        if not matched:
+            print(f"DEBUG: Sample filter functions: {list(filter_functions)[:3]}")
+    
+    return filter_key in filter_functions or f"{clean_class}: *" in filter_functions
 
 if args.aggregateoperators and args.fulllinesofcode:
     print("Aggregation and full lines cannot be enabled at the same time!")
@@ -144,6 +113,33 @@ def write_function_to_file(method_obj, output_base_dir, version_name):
     except Exception as e:
         print(f"Error writing to {output_file}: {e}", file=sys.stderr)
 
+# Create output directory structure
+output_dir = pathlib.Path(args.output_dir)
+new_dir = output_dir / "new"
+old_dir = output_dir / "old"
+
+if args.verbose and args.exclude_lists:
+    print("Ignoring classes includes in these files: %s" % args.exclude_lists)
+
+# Load filter functions if specified
+filter_functions = None
+if args.filter_classes:
+    try:
+        with open(args.filter_classes, 'r') as f:
+            filter_functions = set()
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and ':' in line:
+                    filter_functions.add(line)
+            if len(filter_functions) == 0:
+                filter_functions = None
+        if args.verbose:
+            print(f"Loaded {len(filter_functions) if filter_functions else 0} functions to filter from {args.filter_classes}")
+    except Exception as e:
+        print(f"Error reading filter functions file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 try:
     old = SmaliProject.SmaliProject()
     old.parseProject(args.smaliv1, None, args.exclude_lists, args.include_lists, args.include_unpackaged, use_pysmali=not args.no_pysmali)
@@ -152,22 +148,40 @@ try:
     new.parseProject(args.smaliv2, None, args.exclude_lists, args.include_lists, 
                     include_unpackaged=args.include_unpackaged, use_pysmali=not args.no_pysmali)
 
+    if args.verbose:
+        print(f"Creating output directory: {output_dir}")
+
+    # Create directories
+    output_dir.mkdir(parents=True, exist_ok=True)
+    new_dir.mkdir(parents=True, exist_ok=True)
+    old_dir.mkdir(parents=True, exist_ok=True)
+
     diff = old.differences(new, [])
     for x in diff:
         if x is None or x[0] is None or x[0][0] is None: 
             continue 
         
-        # Check if this class should be included based on filter
         class_name = x[0][0].name.replace('/', '.')
         if args.verbose: 
-            print(class_name)
-        if not should_filter_class(class_name):
-            continue
+            print(f"Processing class: {class_name}")
         
         (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
         for fn in diffs: 
             old_method = fn[0]
             new_method = fn[1]
+            
+            # Get method name for filtering
+            method_obj = old_method if old_method is not None else new_method
+            if method_obj is None:
+                continue
+                
+            # Extract method name from signature
+            method_signature = method_obj.getFullSignature()
+            method_name = method_signature.split('(')[0].split(' ')[-1].split('.')[-1]
+            
+            # Check if this function should be included based on filter
+            if not should_filter_function(class_name, method_name):
+                continue
             
             # Write both old and new versions
             if old_method is not None:
@@ -177,7 +191,7 @@ try:
             
             # Print the signature for reference
             differ = old_method if old_method is not None else new_method
-            if verbose and differ is not None:
+            if args.verbose:
                 print(differ.getFullSignature())
                 
 except Metrics.ProjectObfuscatedException:             

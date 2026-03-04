@@ -168,7 +168,7 @@ class PysmaliClassVisitor(ClassVisitor):
             args_str = " ".join([str(a) for a in args if a is not None])
             self._record(opcode, f"{opcode} {args_str}".strip())
 
-        def visit_subannotation(self, name: str, access_flags: List[str]) -> None:
+        def visit_subannotation(self, name: str, access_flags: List[str], *args, **kwargs) -> None:
             """Called when visiting a subannotation."""
             #logging.debug("DEBUG - visit_subannotation called for subannotation: " + str(name))
             if not self.current_class:
