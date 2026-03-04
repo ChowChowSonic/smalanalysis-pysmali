@@ -126,13 +126,12 @@ def write_function_to_file(method_obj, output_base_dir, version_name):
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write the method's smali code
             f.write(f"# Method: {method_obj.getFullSignature()}\n")
-            f.write(f"# Version: {version_name}\n")
-            f.write(f"# Class: {class_name}\n\n")
             
             # Get the method content - this depends on the smalanalysis library structure
             # We'll need to access the actual smali code from the method object
-            if hasattr(method_obj, 'getContent'):
-                f.write(method_obj.getContent())
+            if hasattr(method_obj, 'getLines'):
+                for line in method_obj.getLines(): 
+                    f.write(line+'\n')
             elif hasattr(method_obj, 'toString'):
                 f.write(str(method_obj))
             else:
@@ -160,7 +159,8 @@ try:
         
         # Check if this class should be included based on filter
         class_name = x[0][0].name.replace('/', '.')
-        print(class_name)
+        if args.verbose: 
+            print(class_name)
         if not should_filter_class(class_name):
             continue
         

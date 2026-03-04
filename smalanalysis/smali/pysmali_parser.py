@@ -156,19 +156,48 @@ class PysmaliClassVisitor(ClassVisitor):
             self.current_method = parent_visitor.current_method
             self.signature = self.current_method.getSignature()
         
-        def visit_instruction(self, *args, **kwargs) -> None:
-            """Called for each instruction in the method body."""
-            #logging.debug("DEBUG - visit_instruction called for method: " + self.signature)
+        def _record(self, opcode: str, full_instruction: str):
+            """Helper to save the instruction to all tracking lists."""
             if self.signature in self.parent.method_lines:
-                self.parent.method_lines[self.signature].append(args[0])
-        
-        def visit_end(self) -> None:
-            """Called when finished visiting the method body."""
-            # Add the collected lines to the method
-            #logging.debug("DEBUG - visit_end called for method: " + self.signature)
-            if self.signature in self.parent.method_lines:
-                for line in self.parent.method_lines[self.signature]:
-                    self.parent.current_method.addLine(line)
+                self.parent.method_lines[self.signature].append(opcode)
+                if self.current_method:
+                    self.current_method.addLine(full_instruction)
+
+        def visit_instruction(self, opcode: str, *args, **kwargs) -> None:
+            """Handles basic instructions (e.g., move, return, add-int)."""
+            args_str = " ".join([str(a) for a in args if a is not None])
+            self._record(opcode, f"{opcode} {args_str}".strip())
+
+        def visit_subannotation(self, name: str, access_flags: List[str]) -> None:
+            """Called when visiting a subannotation."""
+            #logging.debug("DEBUG - visit_subannotation called for subannotation: " + str(name))
+            if not self.current_class:
+                return
+
+        def visit_invoke(self, inv_type: str, args: list, owner: str, method: str):
+                """Standard handler for invoke instructions in most pysmali versions."""
+                # Ensure class_name has proper Smali formatting if not already present
+                if not owner.startswith('L'):
+                    owner = f"L{owner};"
+                
+                target = f"{owner}->{method}"
+                self._record("invoke-"+str(inv_type), f"invoke-{inv_type} "+'{'+f" {', '.join(args)} "+'}'+f", {target}")
+
+        def visit_method_instruction(self, *args, **kwargs):
+            """Redirect this to visit_invoke to ensure coverage."""
+            self.visit_invoke(*args, **kwargs)
+
+        def visit_field_instruction(self, opcode: str, register: str, object_reg: Optional[str], 
+                                    class_name: str, field_name: str, field_type: str) -> None:
+            """Specifically captures 'sget', 'sput', 'iget', 'iput' instructions."""
+            # Static fields use one register, Instance fields use two
+            regs = f"{register}, {object_reg}" if object_reg else register
+            target = f"{class_name};->{field_name}:{field_type}"
+            self._record(opcode, f"{opcode} {regs}, {target}")
+
+        def visit_type_instruction(self, opcode: str, register: str, type_name: str) -> None:
+            """Captures 'check-cast', 'new-instance', etc."""
+            self._record(opcode, f"{opcode} {register}, L{type_name};")
 
 def parse_smali(content: str) -> 'smalanalysis.smali.SmaliObject.SmaliClass':
     """
@@ -186,8 +215,8 @@ def parse_smali(content: str) -> 'smalanalysis.smali.SmaliObject.SmaliClass':
         #logging.debug("DEBUG - Finished parsing smali content")
         return visitor.get_parsed_class()
     except Exception as e:
-        logging.debug(f"ERROR in parse_smali: {str(e)}")
-        logging.debug(f"Error type: {type(e).__name__}")
+        print(f"ERROR in parse_smali: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
         #traceback.print_exc()
         #logging.debug(f"Content length: {len(content)}")
         #logging.debug(f"Content preview: {content[:200]}")
