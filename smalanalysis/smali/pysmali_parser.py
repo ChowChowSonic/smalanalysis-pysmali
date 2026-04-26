@@ -1,8 +1,41 @@
 from smali import SmaliReader, ClassVisitor, MethodVisitor
 from typing import Optional, List, Dict, Any
-from smalanalysis.smali.SmaliObject import access_flags_to_list
 import smalanalysis.smali.SmaliObject
 import logging
+import traceback
+
+def access_flags_to_list(flags):
+    """Convert access flags integer to a list of string modifiers."""
+    if not isinstance(flags, int):
+        return []
+    
+    # Common access flags in smali
+    flag_map = {
+        0x1: 'public',
+        0x2: 'private',
+        0x4: 'protected',
+        0x8: 'static',
+        0x10: 'final',
+        0x20: 'synchronized',
+        0x40: 'volatile',
+        0x80: 'transient',
+        0x100: 'native',
+        0x200: 'interface',
+        0x400: 'abstract',
+        0x1000: 'synthetic',
+        0x2000: 'annotation',
+        0x4000: 'enum',
+        0x8000: 'unused',
+        0x10000: 'constructor',
+        0x20000: 'declared_synchronized',
+    }
+    
+    modifiers = []
+    for flag_value, flag_name in flag_map.items():
+        if flags & flag_value:
+            modifiers.append(flag_name)
+    
+    return modifiers
 
 class PysmaliClassVisitor(ClassVisitor):
     """A visitor class that builds a SmaliClass object from pysmali's AST."""
@@ -24,6 +57,14 @@ class PysmaliClassVisitor(ClassVisitor):
         self.current_class = smalanalysis.smali.SmaliObject.SmaliClass(None)
         self.current_class.setName(f"L{name};")  # Add L and ; for consistency
         self.current_class.addModifiersFromList(access_flags_to_list(access_flags))
+
+    def visit_inner_class(self, name: str, access_flags: List[str], outer_name: Optional[str], inner_name: Optional[str]) -> None:
+        """
+        Called when the parser encounters:
+        .inner class public static final Lcom/package/MyClass$1; 
+        """
+        pass
+            
     
     def visit_super(self, name: str) -> None:
         """Called when visiting the superclass definition."""
@@ -199,7 +240,7 @@ class PysmaliClassVisitor(ClassVisitor):
             """Captures 'check-cast', 'new-instance', etc."""
             self._record(opcode, f"{opcode} {register}, L{type_name};")
 
-def parse_smali(content: str) -> 'smalanalysis.smali.SmaliObject.SmaliClass':
+def parse_smali(content: str, name: str) -> 'smalanalysis.smali.SmaliObject.SmaliClass':
     """
     Parse smali code using pysmali and return a SmaliClass object.
     """
@@ -215,9 +256,9 @@ def parse_smali(content: str) -> 'smalanalysis.smali.SmaliObject.SmaliClass':
         #logging.debug("DEBUG - Finished parsing smali content")
         return visitor.get_parsed_class()
     except Exception as e:
-        print(f"ERROR in parse_smali: {str(e)}")
+        print(f"ERROR in parse_smali when reading file {name}: {str(e)}")
         print(f"Error type: {type(e).__name__}")
-        #traceback.print_exc()
+        traceback.print_exc()
         #logging.debug(f"Content length: {len(content)}")
         #logging.debug(f"Content preview: {content[:200]}")
         return None 

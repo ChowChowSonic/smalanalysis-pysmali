@@ -192,7 +192,7 @@ class SmaliProject(object):
                         except UnicodeDecodeError:
                             ccontent = f.read().decode('latin-1')
                         
-                        cls = self.parseClass(ccontent, use_pysmali=use_pysmali)
+                        cls = self.parseClass(ccontent, n, use_pysmali=use_pysmali)
                         #print(str(cls))
                         if cls is None:
                             failed+=1
@@ -365,7 +365,7 @@ class SmaliProject(object):
         return ret
 
     @staticmethod
-    def parseClass(ccontent, use_pysmali=True):
+    def parseClass(ccontent, name, use_pysmali=True):
         """
         Parse a smali class from its content.
         
@@ -377,7 +377,7 @@ class SmaliProject(object):
         if use_pysmali:
             try:
                 from .pysmali_parser import parse_smali
-                return parse_smali(ccontent)
+                return parse_smali(ccontent, name)
             except ImportError:
                 # Fall back to legacy parser if pysmali is not available
                 import warnings
@@ -540,7 +540,7 @@ class SmaliProject(object):
         """
         with open(file, 'r', encoding='utf-8') as fp:
             ccontent = fp.read()
-        cls = SmaliProject.parseClass(ccontent, use_pysmali=use_pysmali)
+        cls = SmaliProject.parseClass(ccontent, file, use_pysmali=use_pysmali)
         if cls:
             cls.parent = self
             self.addClass(cls)

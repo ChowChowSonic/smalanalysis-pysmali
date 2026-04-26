@@ -5,41 +5,7 @@ import re
 
 from smalanalysis.smali import ComparisonIgnores, ChangesTypes
 import smalanalysis.smali.SmaliProject
-import smalanalysis.smali.SmaliObject
-
-def access_flags_to_list(flags):
-    """Convert access flags integer to a list of string modifiers."""
-    if not isinstance(flags, int):
-        return []
-    
-    # Common access flags in smali
-    flag_map = {
-        0x1: 'public',
-        0x2: 'private',
-        0x4: 'protected',
-        0x8: 'static',
-        0x10: 'final',
-        0x20: 'synchronized',
-        0x40: 'volatile',
-        0x80: 'transient',
-        0x100: 'native',
-        0x200: 'interface',
-        0x400: 'abstract',
-        0x1000: 'synthetic',
-        0x2000: 'annotation',
-        0x4000: 'enum',
-        0x8000: 'unused',
-        0x10000: 'constructor',
-        0x20000: 'declared_synchronized',
-    }
-    
-    modifiers = []
-    for flag_value, flag_name in flag_map.items():
-        if flags & flag_value:
-            modifiers.append(flag_name)
-    
-    return modifiers
-
+from smalanalysis.smali.pysmali_parser import access_flags_to_list
 NOT_SAME_NAME = 'NOT_SAME_NAME'
 NOT_SAME_RETURN_TYPE = 'NOT_SAME_RETURN_TYPE'
 NOT_SAME_MODIFIERS = 'NOT_SAME_MODIFIERS'
@@ -550,6 +516,23 @@ class SmaliClass(SmaliAnnotableModifiable):
     def getNonAnonymousInnerClasses(self):
         return filter(lambda x: not re.match(("^[0-9]+$"), x), self.innerclasses)
 
+    def addInnerClassReference(self, inner_class_name, is_nameless=False):
+        """
+        Add a reference to an inner class. This is called by the pysmali parser
+        when it encounters .inner class directives.
+        
+        Args:
+            inner_class_name: The full internal name of the inner class (e.g., 'com/package/MyClass$1')
+            is_nameless: True if this is an anonymous inner class
+        """
+        # Extract just the inner class part (after the $)
+        if '$' in inner_class_name:
+            inner_name = inner_class_name.split('$')[-1]
+            self.innerclasses[inner_name] = None  # Will be populated later with actual class object
+        else:
+            # Fallback for unexpected format
+            self.innerclasses[inner_class_name] = None
+
     def determineParentClass(self):
         if self.parent is not None:
             if self.zuper is not None:
@@ -658,8 +641,9 @@ class SmaliClass(SmaliAnnotableModifiable):
         if ComparisonIgnores.CLASS_FIELDS not in ignores:
             ret = self.fieldsComparison(other, ignores, fret, mappings)
 
-            for diff in ret[1]:
-                fret.append(diff)
+            fret.extend(ret[1])
+            #for diff in ret[1]:
+            #    fret.append(diff)
 
         return fret
 
