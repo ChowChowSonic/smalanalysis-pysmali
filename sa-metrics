@@ -34,8 +34,6 @@ parser.add_argument('--include-lists', '-i', type=str, nargs='*',
                     help='Files containing included list')
 parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
                     help='Do not split metrics for inner/outer classes')
-parser.add_argument('--use-pysmali', action='store_true',
-                    help='Use the pysmali parser (faster and more reliable)')
 
 args = parser.parse_args()
 
@@ -54,14 +52,14 @@ if args.aggregateoperators and args.fulllinesofcode:
 
 try:
     old = SmaliProject.SmaliProject()
-    old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged, use_pysmali=args.use_pysmali)
+    old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
     #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
 
     mold, moldin = Metrics.countMethodsInProject(old)
 
     new = SmaliProject.SmaliProject()
     new.parseProject(args.smaliv2, pkg, args.exclude_lists, args.include_lists, 
-                    include_unpackaged=args.include_unpackaged, use_pysmali=args.use_pysmali)
+                    include_unpackaged=args.include_unpackaged)
     #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
 
     mnew, mnewin = Metrics.countMethodsInProject(new)
