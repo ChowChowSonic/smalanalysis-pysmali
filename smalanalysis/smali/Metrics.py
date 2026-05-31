@@ -3,7 +3,7 @@
 # Creation date: 2017-09-15
 
 from smalanalysis.smali import ChangesTypes, SmaliObject
-
+import sys 
 def isEvolution(l):
     atLeastOne = False
 
@@ -70,12 +70,16 @@ def computeMetrics(r, out, metricKey="", diffOpOnly=True, aggregateOps=False):
         if rr[1] is None:
             # Class change level here...
             if rr[0][1] is None:
+                deleted_class = rr[0][0]
                 out["{}CD".format(metricKey)] += 1
                 out["{}#C-".format(metricKey)] += 1
+                out["{}MD".format(metricKey)] += countMethodsInClass(deleted_class)
                 continue
             elif rr[0][0] is None:
+                added_class = rr[0][1]
                 out["{}CA".format(metricKey)] += 1
                 out["{}#C+".format(metricKey)] += 1
+                out["{}MA".format(metricKey)] += countMethodsInClass(added_class)
                 continue
 
         out["{}#C-".format(metricKey)] += 1
@@ -138,7 +142,7 @@ def computeMetrics(r, out, metricKey="", diffOpOnly=True, aggregateOps=False):
                             cmd = cmd.split('/')[0].split('-')[0]
                         out["{}removedLines".format(metricKey)].add(cmd)
 
-        out["{}CC".format(metricKey)] += len(changedclass)
+        out["{}CC".format(metricKey)] += 1
         out["{}A".format(metricKey)] += 1 if atLeastOneMethodAdded else 0
         out["{}D".format(metricKey)] += 1 if atLeastOneMethodDeleted else 0
 
