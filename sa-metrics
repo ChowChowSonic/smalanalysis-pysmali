@@ -7,7 +7,14 @@ import argparse
 import sys
 import smalanalysis
 import logging 
+import tempfile 
+import os
+import shutil
+import subprocess
+import zipfile
 from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
+from smalanalysis.smali.SmaliObject import disassemble_apk_to_zip
+from smalanalysis.tools.commands import queryAaptForPackageName
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
@@ -16,12 +23,14 @@ parser.add_argument('smaliv1', type=str,
                     help='Version 1 folder containing smali files')
 parser.add_argument('smaliv2', type=str,
                     help='Version 2 folder containing smali files')
-parser.add_argument('pkg', type=str,
-                    help='The app package name')
+parser.add_argument('pkg', type=str, nargs='?', default=None,
+                    help='The app package name (required with --onlyapppackage)')
 parser.add_argument('--verbose', '-v', action='store_true',
                     help='Show metrics details')
-parser.add_argument('--onlyapppackage', '-P', action='store_true',
+parser.add_argument('--onlyapppackage', '-P', dest='pkg_source', action='store_const', const='manual',
                     help='Includes only classes in the app package specified')
+parser.add_argument('--onlymainpackage', '-M', dest='pkg_source', action='store_const', const='auto',
+                    help='Auto-detect the main app package and filter to it')
 parser.add_argument('--fulllinesofcode', '-f', action='store_true',
                     help='Show full lines instead of opcodes for differences')
 parser.add_argument('--aggregateoperators', '-a', action='store_true',
@@ -32,16 +41,26 @@ parser.add_argument('--exclude-lists', '-e', type=str, nargs='*',
                     help='Files containing excluded list')
 parser.add_argument('--include-lists', '-i', type=str, nargs='*',
                     help='Files containing included list')
-parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
-                    help='Do not split metrics for inner/outer classes')
+parser.add_argument('--with-innerclasses-split', '-I', action='store_true',
+                    help='Split metrics for inner/outer classes')
 
 args = parser.parse_args()
 
 pkg = None
-if args.onlyapppackage:
+if args.pkg_source == 'manual':
+    if args.pkg is None:
+        parser.error("--onlyapppackage/-P requires a package name argument.")
     pkg = args.pkg
     if args.verbose:
         print("Including classes only in %s" % pkg)
+elif args.pkg_source == 'auto':
+    detected = queryAaptForPackageName(args.smaliv1) or queryAaptForPackageName(args.smaliv2)
+    if detected:
+        if args.verbose:
+            print("Auto-detected package: %s" % detected, file=sys.stderr)
+        pkg = detected
+    else:
+        print("Warning: Could not auto-detect package name.", file=sys.stderr)
 
 if args.verbose and args.exclude_lists:
     print("Ignoring classes includes in these files: %s" % args.exclude_lists)
@@ -50,15 +69,33 @@ if args.aggregateoperators and args.fulllinesofcode:
     print("Aggregation and full lines cannot be enabled at the same time!")
     sys.exit(1)
 
+def is_apk_file(filepath):
+    """Check if a file is an APK by extension"""
+    return filepath.lower().endswith('.apk')
+
+def process_input_file(input_path, verbose=False):
+    """
+    Process an input file - if it's an APK, disassemble it first.
+    Returns (path_to_zip, temp_dir) where temp_dir is None if no temp files were created.
+    """
+    if is_apk_file(input_path):
+        zip_path, temp_dir = disassemble_apk_to_zip(input_path, verbose)
+        return zip_path, temp_dir
+    else:
+        # Assume it's already a ZIP with smali files
+        return input_path, None
+
 try:
     old = SmaliProject.SmaliProject()
-    old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+    oldzip, oldtemp = process_input_file(args.smaliv1, args.verbose)
+    old.parseProject(oldzip, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
     #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
 
     mold, moldin = Metrics.countMethodsInProject(old)
 
     new = SmaliProject.SmaliProject()
-    new.parseProject(args.smaliv2, pkg, args.exclude_lists, args.include_lists, 
+    newzip, newtemp = process_input_file(args.smaliv2, args.verbose)
+    new.parseProject(newzip, pkg, args.exclude_lists, args.include_lists, 
                     include_unpackaged=args.include_unpackaged)
     #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
 
@@ -68,13 +105,7 @@ try:
 
     metrics = {}
 
-    if args.no_innerclasses_split:
-        Metrics.initMetricsDict("", metrics)
-        metrics["#M-"] = mold + moldin
-        metrics["#M+"] =  mnew + mnewin
-        Metrics.computeMetrics(diff, metrics, "", not args.fulllinesofcode, args.aggregateoperators)
-
-    else:
+    if args.with_innerclasses_split:
         innerDiff, outerDiff = Metrics.splitInnerOuterChanged(diff)
 
         Metrics.initMetricsDict("OUT", metrics)
@@ -86,13 +117,17 @@ try:
 
         Metrics.computeMetrics(outerDiff, metrics, "OUT", not args.fulllinesofcode, args.aggregateoperators)
         Metrics.computeMetrics(innerDiff, metrics, "IN", not args.fulllinesofcode, args.aggregateoperators)
+    else:
+        Metrics.initMetricsDict("", metrics)
+        metrics["#M-"] = mold + moldin
+        metrics["#M+"] =  mnew + mnewin
+        Metrics.computeMetrics(diff, metrics, "", not args.fulllinesofcode, args.aggregateoperators)
 
 except Metrics.ProjectObfuscatedException:
     print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
     sys.exit(1)
-
 bases = [""]
-if not args.no_innerclasses_split:
+if args.with_innerclasses_split:
     bases = ["IN", "OUT"]
 
 if args.verbose:
@@ -115,18 +150,46 @@ if args.verbose:
         for l in metrics["{}{}".format(b, "removedLines")]:
             print("\t- {}".format(l))
 else:
-    headers_printed = False
-    for b in bases:
-        if not headers_printed:
-            print("Scope", end=',')
-            for k in filter(lambda x: type(metrics[x]) != set and x.startswith(b), metrics.keys()):
-                print(k[len(b):], end=',')
-            print("addedLines", end=',')
-            print("removedLines")
-            headers_printed = True
+    #print(dict(list(metrics.items())), file=sys.stderr)
+    core_metrics = [
+        "#C-", "#C+", "#M-", "#M+", 
+        #"E", "B", "A", "D", "C", 
+        "MA", "MD", "MR", "MC", "MRev", "FA", "FD", "FC", "FR", 
+        "CA", "CD", "CC"
+    ]
+    
+    header_mapping = {
+        "#C-": "old Classes", "#C+": "new Classes", 
+        "#M-": "old Methods", "#M+": "new Methods",
+        #"E": "Cls_added_to", "B": "Cls_w/modified_fns", "A": "Cls_w/Added_Fns",
+        #"D": "Cls_Trimmed", "C": "Cls_w/Changed_Fns",
+        "MA": "Mth_Added", "MD": "Mth_Deleted", 
+        "MR": "Mth_Renamed", "MC": "Mth_Changed",
+        "MRev": "Mth_Revised", "FA": "Fld_Added",
+        "FD": "Fld_Deleted", "FC": "Fld_Changed", 
+        "FR": "Fld_Renamed", "CA": "Cls_Added",
+        "CD": "Cls_Deleted", "CC": "Cls_Changed"
+    }
+    
+    # 2. Print Header once
+    print("Scope", end=',')
+    for m in core_metrics:
+        print(header_mapping.get(m, m), end=',')
+    print("Added_Lines,Removed_Lines")
 
-        print(b, end=',')
-        for k in filter(lambda x: type(metrics[x]) != set and x.startswith(b), metrics.keys()):
-            print("%d" % metrics[k], end=',')
-        print('|'.join(metrics["{}addedLines".format(b)]), end=',')
-        print('|'.join(metrics["{}removedLines".format(b)]))
+    # 3. Print Data Rows
+    for b in bases:
+        display_base = b if b != "" else pkg
+        print(display_base, end=',')
+        
+        for m in core_metrics:
+            if args.with_innerclasses_split: 
+                key = "{}{}".format(b, m)
+                val = metrics.get(key, 0)
+            else: 
+                #print(m, metrics.get(m, 0))
+                val = metrics.get(m, 0)
+            print("{}".format(val), end=',')
+        add_lines = "|".join(metrics.get("{}addedLines".format(b), []))
+        rem_lines = "|".join(metrics.get("{}removedLines".format(b), []))
+        print("{},{}".format(add_lines, rem_lines))
