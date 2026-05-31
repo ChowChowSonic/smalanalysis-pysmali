@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 import smalanalysis.smali.SmaliObject
 import logging
 import traceback
+import sys 
 
 def access_flags_to_list(flags):
     """Convert access flags integer to a list of string modifiers."""
@@ -256,8 +257,8 @@ def parse_smali(content: str, name: str) -> 'smalanalysis.smali.SmaliObject.Smal
         #logging.debug("DEBUG - Finished parsing smali content")
         return visitor.get_parsed_class()
     except Exception as e:
-        print(f"ERROR in parse_smali when reading file {name}: {str(e)}")
-        print(f"Error type: {type(e).__name__}")
+        print(f"ERROR in parse_smali when reading file {name}: {str(e)}", file=sys.stderr)
+        print(f"Error type: {type(e).__name__}", file=sys.stderr)
         traceback.print_exc()
         #logging.debug(f"Content length: {len(content)}")
         #logging.debug(f"Content preview: {content[:200]}")
