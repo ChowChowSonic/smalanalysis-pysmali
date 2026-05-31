@@ -1,10 +1,28 @@
 # Metrics Functions
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
+"""
+Metrics computation for APK evolution analysis.
+
+Given a diff result between two versions of a ``SmaliProject``,
+this module classifies each change at the class and method level
+and produces a dictionary of aggregate counters (added / deleted /
+changed / revised classes, methods, fields, and opcode-level
+added/removed instruction sets).
+"""
 
 from smalanalysis.smali import ChangesTypes, SmaliObject
-import sys 
+import sys
 def isEvolution(l):
+    """
+    Return ``True`` when *every* diff entry in *l* is either a
+    ``REVISED_METHOD`` or a method addition (``[None, new, NOT_FOUND]``),
+    with **at least one** addition present.
+
+    A class that only adds new methods and/or revises existing bodies
+    (no deletions, no renames, no structural changes) is called an
+    "evolution" — it grew without removing anything.
+    """
     atLeastOne = False
 
     for d in l:
@@ -21,6 +39,13 @@ def isEvolution(l):
 
 
 def isMethodBodyChangeOnly(l):
+    """
+    Return ``True`` when *every* entry in *l* is a ``REVISED_METHOD`` —
+    i.e. the method signature stayed the same but the body changed.
+
+    A class whose only changes are revised method bodies (no additions,
+    no deletions, no renames, no field changes) is called a "branch."
+    """
     for d in l:
         if d[2] is not ChangesTypes.REVISED_METHOD:
             return False
@@ -29,10 +54,25 @@ def isMethodBodyChangeOnly(l):
 
 
 def isChange(l):
+    """
+    Return ``True`` when *l* contains any structural change — that is,
+    changes that are **not** purely "evolution" (additions + revisions)
+    and **not** purely "branch" (body-only revisions).
+
+    This covers renamed/deleted methods, changed signatures, field
+    modifications, etc.
+    """
     return len(l) > 0 and not isEvolution(l) and not isMethodBodyChangeOnly(l)
 
 
 def skipThisClass(skips, clazz):
+    """
+    Return ``True`` if *clazz* should be skipped based on the exclusion
+    set *skips*.
+
+    Checks both the old and new version of the class (whichever exists)
+    against the skip list.
+    """
     if clazz[0][1] is not None:
         if SmaliObject.SmaliClass.getDisplayName(clazz[0][1].name) not in skips:
             return True
@@ -45,10 +85,11 @@ def skipThisClass(skips, clazz):
 
 
 class ProjectObfuscatedException(Exception):
-    pass
+    """Raised when the parser determines a project is too obfuscated to analyse reliably."""
 
 
 def printName(m):
+    """Return a human-readable ``"ClassName.methodSignature"`` string for a method object."""
     return "{}.{}".format(m.parent.getDisplayName(m.parent.name), m.getSignature())
 
 
@@ -56,6 +97,14 @@ keys = ["#C-", "#C+", "#M-", "#M+", "E", "B", "A", "D", "C", "MA", "MD", "MR", "
 
 
 def initMetricsDict(key, ret):
+    """
+    Initialise every metric counter in *ret* under the prefix *key* to zero,
+    and create empty sets for added/removed opcode lines.
+
+    Args:
+        key: A prefix string (e.g. ``""``, ``"IN"``, ``"OUT"``).
+        ret: The metrics dictionary to initialise in-place.
+    """
     for k in keys:
         ret["{}{}".format(key, k)] = 0
 
@@ -64,6 +113,23 @@ def initMetricsDict(key, ret):
 
 
 def computeMetrics(r, out, metricKey="", diffOpOnly=True, aggregateOps=False):
+    """
+    Walk a diff result list and tally all class-, method-, and field-level
+    changes into the *out* dictionary.
+
+    Args:
+        r: Result from ``SmaliProject.differences()`` — a list where each
+           element is ``[[old_cls, new_cls], [diff_entries]]``.
+        out: The metrics dictionary (must already be initialised via
+             :func:`initMetricsDict`).
+        metricKey: Optional prefix for all metric keys (``""``, ``"IN"``, ``"OUT"``).
+        diffOpOnly: If ``True``, only the opcode mnemonic (first word) is
+                    recorded for added/removed lines.  Otherwise the full line
+                    is stored.
+        aggregateOps: If ``True``, opcodes are further aggregated by their
+                      first keyword (e.g. ``invoke-virtual``, ``invoke-static``
+                      both become ``invoke``).
+    """
     changedclass = set()
 
     for rr in r:
@@ -148,6 +214,13 @@ def computeMetrics(r, out, metricKey="", diffOpOnly=True, aggregateOps=False):
 
 
 def splitInnerOuterChanged(diff):
+    """
+    Split a diff list into two lists — one containing entries whose
+    classes have ``$`` in their name (inner classes) and one for the rest.
+
+    Returns:
+        A pair ``(innerDiff, outerDiff)``.
+    """
     innerDiff, outerDiff = [], []
 
     for d in diff:
@@ -160,6 +233,14 @@ def splitInnerOuterChanged(diff):
 
 
 def countMethodsInProject(project):
+    """
+    Count all methods in a ``SmaliProject``.
+
+    Returns:
+        A pair ``(outer_count, inner_count)`` where:
+        - *outer_count*: methods in top-level classes
+        - *inner_count*: methods in inner (nested) classes
+    """
     cpt = 0
     incpt = 0
 
@@ -172,6 +253,13 @@ def countMethodsInProject(project):
     return cpt, incpt
 
 def countMethodsInClass(clazz):
+    """
+    Recursively count all methods defined in a class, including those
+    in its nested inner classes.
+
+    Returns:
+        The total number of methods.
+    """
     cpt = len(clazz.methods)
 
     for ic in clazz.innerclasses:

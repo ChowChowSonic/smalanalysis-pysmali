@@ -3,7 +3,13 @@
 # Computing Metrics
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
-import argparse
+"""
+Show a detailed per-class diff between two smali projects.
+
+Lists classes that were added, removed, or changed between two APK
+versions, along with the specific methods/fields that differ.
+"""
+
 import sys
 import smalanalysis
 import logging 

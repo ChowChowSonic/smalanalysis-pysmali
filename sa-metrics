@@ -3,6 +3,13 @@
 # Computing Metrics
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
+"""
+Compute evolution metrics between two versions of an APK (or two smali ZIPs).
+
+Disassembles (or loads) old and new bytecode, runs the project-level diff,
+and outputs a CSV row with class-, method-, and field-level change counts.
+"""
+
 import argparse
 import sys
 import smalanalysis

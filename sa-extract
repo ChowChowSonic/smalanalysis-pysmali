@@ -3,7 +3,13 @@
 # Computing Metrics
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
-import argparse
+"""
+Disassemble an APK into a smali ZIP archive (and optionally list class names).
+
+Uses ``apktool`` to decode the APK, then bundles all ``.smali`` files into
+a single ZIP file for downstream analysis.
+"""
+
 import sys
 import os
 import pathlib

@@ -1,6 +1,15 @@
 # Smali Objects
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Date: 2017-09-15
+"""
+Object model for smali bytecode.
+
+Provides ``SmaliClass``, ``SmaliMethod``, ``SmaliField``, and supporting
+classes that represent parsed ``.smali`` files in memory.  Also includes
+helper functions for comparing lists of smali elements and disassembling
+APKs to ZIP archives.
+"""
+
 import re
 import sys 
 import shutil 
@@ -39,9 +48,11 @@ param_registers_pattern = re.compile('p[0-9]+')
 inner_anonymous_class_reference_matcher = re.compile("\\$[0-9$]+;")
 
 def compareStringSets(m1, m2):
+    """Return ``True`` if two string sets are equal (symmetric difference is empty)."""
     return len(m1 ^ m2) == 0
 
 def compareListsSameposition(l1, l2, mappings=None):
+    """Return ``True`` if two lists have the same length and all elements match positionally."""
     if len(l1) != len(l2):
         return False
 
@@ -63,6 +74,16 @@ def compareListsSameposition(l1, l2, mappings=None):
     return True
 
 def bidirectCompareLists(l1, l2, ignores = None, mappings = None):
+    """
+    Bidirectional set comparison.
+
+    Returns elements present in *l1* but not *l2*, prefixed with
+    ``SELF``, and elements present in *l2* but not *l1*, prefixed
+    with ``OTHER``.
+
+    This is the standard "what changed" diff operation for smali
+    element lists (methods, fields, annotations, etc.).
+    """
     if ignores is None:
         ignores = []
 
@@ -78,6 +99,12 @@ def bidirectCompareLists(l1, l2, ignores = None, mappings = None):
 
 
 def compareListsSignatureEq(l1, l2):
+    """
+    Simple identity-based set comparison — two items match if they are
+    ``==`` equal (string equality for names, identity for objects).
+
+    Returns items from *l1* that have no ``==`` match in *l2*.
+    """
     missings = []
 
     if l1 is None and l2 is None:
@@ -99,6 +126,15 @@ def compareListsSignatureEq(l1, l2):
     return missings
 
 def compareLists(l1, l2, ignores = None, mappings = None):
+    """
+    Set comparison with ``differences()``-based matching.
+
+    Two items match when calling ``it1.differences(it2, ignores, mappings)``
+    returns an empty list (or when string items are ``==`` equal under an
+    optional *mappings* remapping).
+
+    Returns unmatched items from *l1*.
+    """
     if ignores is None:
         ignores = []
 
@@ -130,6 +166,7 @@ def compareLists(l1, l2, ignores = None, mappings = None):
     return missings
 
 def compareListsBoolean(l1, l2, mappings=None):
+    """Return ``True`` if *l1* and *l2* contain the same elements (under diff matching)."""
     return len(compareLists(l1, l2, mappings)) == 0
 
 import tempfile 
@@ -204,6 +241,8 @@ def disassemble_apk_to_zip(apk_path, verbose=False):
 
 
 class SmaliAnnotableModifiable(object):
+    """Base class for any smali element that can carry annotations and access modifiers."""
+
     def __init__(self, parent):
         self.annotations = []
         self.modifiers = set()
@@ -266,6 +305,8 @@ class SmaliAnnotableModifiable(object):
 
 
 class SmaliWithLines(SmaliAnnotableModifiable):
+    """Extends ``SmaliAnnotableModifiable`` with a source-code name and list of instruction lines."""
+
     def __init__(self, name, modifiers, parent):
         SmaliAnnotableModifiable.__init__(self, parent)
         self.name = name.strip()
@@ -417,6 +458,8 @@ class SmaliWithLines(SmaliAnnotableModifiable):
         return len(lline) > 0 and lline[0] != '.' and lline[0] != ':' and lline[0] != '#'
 
 class SmaliField(SmaliAnnotableModifiable):
+    """Represents a single ``.field`` declaration in a smali class."""
+
     def __init__(self, name, type, modifiers, init, clazz):
         super(SmaliField, self).__init__(clazz)
         self.name = name
@@ -459,6 +502,8 @@ class SmaliField(SmaliAnnotableModifiable):
 
 
 class SmaliMethod(SmaliWithLines):
+    """Represents a single ``.method`` declaration including its body instructions."""
+
     def __init__(self, name, params, ret, modifiers, clazz):
         SmaliWithLines.__init__(self, name, modifiers, clazz)
         self.params = params
@@ -511,7 +556,7 @@ class SmaliMethod(SmaliWithLines):
 
 
 class SmaliAnnotation(SmaliWithLines):
-    pass
+    """Represents an ``.annotation`` block attached to a class, method, or field."""
 
 
 
@@ -519,6 +564,13 @@ class SmaliAnnotation(SmaliWithLines):
 
 
 def compareWithMapping(old, new, mappings):
+    """
+    Compare two smali names, applying an optional *mappings* dict that
+    translates old inner-class references to their new names.
+
+    This handles cases where inner class numbering changes across APK
+    versions (e.g. ``MyClass$1`` → ``MyClass$3``).
+    """
     oldres = old
 
     if mappings is not None and "$" in old:
@@ -552,6 +604,12 @@ def compareWithMapping(old, new, mappings):
 
 
 class SmaliClass(SmaliAnnotableModifiable):
+    """
+    Represents a single ``.smali`` file — a class with its methods,
+    fields, annotations, superclass, implemented interfaces, and
+    nested inner classes.
+    """
+
     def __init__(self, project):
         super(SmaliClass, self).__init__(project)
         self.name = None

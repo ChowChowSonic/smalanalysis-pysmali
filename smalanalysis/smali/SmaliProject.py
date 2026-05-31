@@ -1,6 +1,14 @@
 # Smali Projects
 # Author: Vincenzo Musco (http://www.vmusco.com)
 # Creation date: 2017-09-15
+"""
+Project-level parsing, class matching, and diffing for collections of smali
+files.
+
+``SmaliProject`` represents a set of smali classes parsed from a directory
+or ZIP archive.  Two projects can be compared to produce a ``diff`` result
+that drives the metrics computation.
+"""
 
 import logging
 import re
@@ -15,6 +23,13 @@ from smalanalysis.smali.ChangesTypes import REVISED_METHOD, SAME_NAME
 
 
 class MATCHERS:
+    """
+    Compiled regular expressions reused across the legacy (regex-based) parser.
+
+    Each attribute is a ``re.compile`` pattern that matches a specific smali
+    construct (class header, method signature, field declaration, etc.).
+    """
+
     obj = "(\\[*(L[a-zA-Z0-9/_$\\-]+;|Z|B|S|C|I|J|F|D|V))"
     method_reg = re.compile("\\.method( [a-z \\-]+?)*( [a-zA-Z0-9<>_$\\-]+){1}\\((.*)\\)(.*)")  # Without obfuscation
     method = re.compile("\\.method( [a-z \\-]+?)*( [^ ]+){1}\\((.*)\\)(.*)")
@@ -29,6 +44,13 @@ class MATCHERS:
 
 
 class SmaliProject(object):
+    """
+    A collection of smali classes parsed from a directory tree or a ZIP archive.
+
+    Supports parsing, class matching (linking old ↔ new versions), and
+    ``differences()`` to produce structured diff data for metric computation.
+    """
+
     def __init__(self):
         self.classes = []
         self.classesdict = {}
@@ -48,24 +70,38 @@ class SmaliProject(object):
         pass
 
     def isProjectObfuscated(self):
-        keep, skip = 0, 0
-
-        obfuscatedclassname = re.compile("(.*/)?[a-z]{1,3};")
-
-        for p in self.classes:
-            obfuscatedclass = obfuscatedclassname.fullmatch(p.name) is not None
-            if not obfuscatedclass:
-                keep += 1
-            else:
-                skip += 1
-
-        if keep == 0:
+        """
+        Heuristic check: if the project contains no classes, classes named
+        ``L;``, or more than 75 % of classes whose ``getBaseName()`` equals
+        ``getDisplayName()``, return ``True``.
+        """
+        if len(list(self.classes)) == 0:
             return True
 
-        return skip / keep > 0.75
+        cntgood = 0
+
+        for c in self.classes:
+            if c.name is not None and c.name[0:2] == 'L;':
+                return True
+
+            if c.getBaseName() == c.getDisplayName():
+                cntgood += 1
+
+        if len(list(self.classes)) / cntgood > 0.75:
+            return True
+
+        return False
 
     @staticmethod
     def shouldAnalyzeThisClass(classname, skips=None, includes=None, default=True):
+        """
+        Return ``True`` if *classname* should be analysed based on the
+        given inclusion and exclusion sets.
+
+        - If an *includes* pattern matches → ``True``.
+        - If a *skips* pattern matches → ``False``.
+        - Otherwise return *default*.
+        """
         clazz = classname
 
         if '/' in classname:
@@ -546,6 +582,12 @@ class SmaliProject(object):
 
     @staticmethod
     def diffAnonymousInnerClasses(old, new, mappings):
+        """
+        Match anonymous inner classes (named ``$1``, ``$2``, …) between two
+        versions using diff-based similarity heuristics.
+
+        Returns a 3-tuple ``(matched, unmatched_old, unmatched_new)``.
+        """
         def onlyUnmatched(innerclasses, matchState):
             return filter(lambda x: x not in matchState, innerclasses)
 
@@ -599,6 +641,12 @@ class SmaliProject(object):
 
     @staticmethod
     def diffNonAnonymousInnerClasses(old, new, mappings):
+        """
+        Match named inner classes (not anonymous — e.g. ``MyClass$Helper``)
+        between two versions by name.
+
+        Returns a 3-tuple ``(matched, unmatched_old, unmatched_new)``.
+        """
         oldc = old.getNonAnonymousInnerClasses()
         oldk = set(list(oldc))
         newc = new.getNonAnonymousInnerClasses()

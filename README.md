@@ -65,12 +65,17 @@ sa-metrics old.smali.zip new.smali.zip com.example.app
 ## Getting a package name (ID)
 
 A shorthand function is available to get the package name/id.
-It simply query the `aapt` tool and parse the output.
+It uses `apktool` to decode just the Android manifest (much faster than a full disassembly)
+and parses the `package` attribute from the XML. Falls back to `aapt` if `apktool` is unavailable.
+Also supports smali ZIP archives — it can infer the package from the directory structure
+or from a bundled `AndroidManifest.xml`.
 
 ```python
 >>> from smalanalysis.tools.commands import queryAaptForPackageName
->>> queryAaptForPackageName("/Users/vince/base.apk")
-b'com.android.packagename'
+>>> queryAaptForPackageName("base.apk")
+'com.android.packagename'
+>>> queryAaptForPackageName("app.smali.zip")
+'com.example.app'
 ```
 
 ## Analyzing APKs
@@ -126,17 +131,20 @@ sa-disassemble app.apk
 Computes detailed evolution metrics between two versions of an app.
 
 **Usage:**
-`sa-metrics <old_apk.smali> <new_apk.smali> <package_name> [options]`
+`sa-metrics <old_apk.smali> <new_apk.smali> [package_name] [options]`
 
 **Options:**
 - `--verbose, -v`: Show detailed metrics output
-- `--onlyapppackage, -P`: Include only classes in the specified app package
+- `--onlyapppackage, -P`: Include only classes in the specified app package (requires `package_name` argument)
+- `--onlymainpackage, -M`: Auto-detect the app package and filter to it (supports APKs and smali ZIPs)
 - `--fulllinesofcode, -f`: Show full lines instead of opcodes for differences
 - `--aggregateoperators, -a`: Aggregate operators by their first keyword
 - `--include-unpackaged, -U`: Include classes which are not in a package
 - `--exclude-lists, -e`: Files containing excluded class lists
 - `--include-lists, -i`: Files containing included class lists
-- `--no-innerclasses-split, -I`: Do not split metrics for inner/outer classes
+- `--with-innerclasses-split, -I`: Split metrics for inner/outer classes
+
+The `-P` and `-M` flags share the same destination — if both are provided, the **last one on the command line wins**. When using `-M`, the `package_name` argument becomes optional and the tool attempts to detect it automatically.
 
 **Output:**
 - Class and method counts for both versions
@@ -187,7 +195,7 @@ Both inputs can be either:
 - APK files (`.apk`) - will be automatically disassembled
 - ZIP archives containing smali files (`.zip`, `.smali.zip`)
 
-**Note:** Unlike `sa-metrics` and `sa-list`, `sa-extract` does **not** require a package name argument.
+**Note:** Unlike `sa-extract`, `sa-metrics` and `sa-list` optionally accept a package name for filtering, which can also be auto-detected with `-M`.
 
 **Example:**
 ```bash
@@ -197,9 +205,10 @@ sa-extract older/app.apk latest/app.apk extracted_changes/
 # Using pre-disassembled smali archives
 sa-extract older/app.smali.zip latest/app.smali.zip extracted_changes/
 
-# Comparison with other tools (which require package name)
+# Comparison with other tools
 sa-metrics old.smali.zip new.smali.zip com.example.app
-sa-list old.smali.zip new.smali.zip com.example.app
+sa-metrics old.smali.zip new.smali.zip -M           # auto-detect
+sa-list old.smali.zip new.smali.zip -P com.example.app
 ```
 
 This will create:
@@ -309,13 +318,16 @@ Same filtering options as `sa-metrics`
 Most tools support these standard options:
 
 **Filtering Options:**
-- `--onlyapppackage, -P`: Limit analysis to specific app package
+- `--onlyapppackage, -P`: Limit analysis to a specific app package (requires `package_name` argument)
+- `--onlymainpackage, -M`: Auto-detect the main app package and filter to it
 - `--include-unpackaged, -U`: Include classes without packages
 - `--exclude-lists, -e`: Specify files with class exclusion lists
 - `--include-lists, -i`: Specify files with class inclusion lists
+
+The `-P` and `-M` flags share the same destination — if both are provided, the last one on the command line wins.
 
 **Output Options:**
 - `--verbose, -v`: Show detailed output
 - `--fulllinesofcode, -f`: Show full lines instead of opcodes
 - `--aggregateoperators, -a`: Aggregate operators by keyword
-- `--no-innerclasses-split, -I`: Don't separate inner/outer class metrics
+- `--with-innerclasses-split, -I`: Split metrics for inner/outer classes
