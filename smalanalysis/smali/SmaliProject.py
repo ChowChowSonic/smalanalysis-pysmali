@@ -161,10 +161,10 @@ class SmaliProject(object):
                 with zipfile.ZipFile(folder, 'r') as zp:
                     self._parse_zip_project(zp, package, skips, includes, include_unpackaged, use_pysmali)
             else:
-                print("Parsing folder not supported anymore. Please use archive mode.")
+                sys.stderr.write("Parsing folder not supported anymore. Please use archive mode.\n")
                 # SmaliProject.parseFolderLoop(folder, folder, self, package, skips=skips, includes=includes, include_unpackaged = includeUnpackaged)
         else:
-            print("File {} not found!".format(folder))
+            sys.stderr.write("File {} not found!\n".format(folder))
 
     def _parse_zip_project(self, zp, package, skips, includes, include_unpackaged, use_pysmali):
         """
@@ -223,7 +223,7 @@ class SmaliProject(object):
                     except UnicodeDecodeError:
                         ccontent = f.read().decode('latin-1')
                     self.parseRessource(ccontent)
-        print(f"Failed to parse {failed} classes, with {successful} successfully parsed classes")
+        sys.stderr.write(f"Failed to parse {failed} classes, with {successful} successfully parsed classes\n")
         # Process inner classes
         self._process_inner_classes(classes, inner_classes)
 
@@ -347,20 +347,6 @@ class SmaliProject(object):
 
                 for insertedInnerClasses in result[2]:
                     ret.append([[None, insertedInnerClasses], None])
-
-            # Not matched inner classes
-            for diff in dd[1]:
-                def analyseIt(clazz, innerclasses):
-                    for i in clazz.innerclasses:
-                        innerclasses.append(clazz.innerclasses[i])
-                        analyseIt(clazz.innerclasses[i], innerclasses)
-
-                innerclasses = []
-                analyseIt(diff[1 if diff[0] is None else 0], innerclasses)
-
-                for r in map(lambda x: [[None if diff[0] is None else x, x if diff[0] is None else None], None],
-                             innerclasses):
-                    ret.append(r)
 
         return ret
 
