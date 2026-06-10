@@ -50,6 +50,8 @@ parser.add_argument('--filter-classes', '-F', type=str,
                     help='File containing list of functions to filter for (format: class_name: function_name, one per line)')
 parser.add_argument('--filter-instructions-regex', '-R', type=str,
                     help='Regex pattern to filter instructions')
+parser.add_argument('--skip-obfuscated', '-s', action='store_true',
+                    help='Skip classes that appear obfuscated instead of aborting')
 args = parser.parse_args()
 
 def should_filter_function(class_name, method_name):
@@ -219,9 +221,19 @@ try:
     old = SmaliProject.SmaliProject()
     old.parseProject(old_input, None, args.exclude_lists, args.include_lists, args.include_unpackaged)
 
+    if args.skip_obfuscated:
+        removed_old = old.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_old} obfuscated classes in old version", file=sys.stderr)
+
     new = SmaliProject.SmaliProject()
     new.parseProject(new_input, None, args.exclude_lists, args.include_lists,
                     include_unpackaged=args.include_unpackaged)
+
+    if args.skip_obfuscated:
+        removed_new = new.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_new} obfuscated classes in new version", file=sys.stderr)
 
     if args.verbose:
         print(f"Creating output directory: {output_dir}")

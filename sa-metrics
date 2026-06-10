@@ -21,7 +21,7 @@ import subprocess
 import zipfile
 from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
 from smalanalysis.smali.SmaliObject import disassemble_apk_to_zip
-from smalanalysis.tools.commands import queryAaptForPackageName
+from smalanalysis.tools.commands import queryAaptForPackageName, MainActivityNotFoundError
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
@@ -50,6 +50,8 @@ parser.add_argument('--include-lists', '-i', type=str, nargs='*',
                     help='Files containing included list')
 parser.add_argument('--with-innerclasses-split', '-I', action='store_true',
                     help='Split metrics for inner/outer classes')
+parser.add_argument('--skip-obfuscated', '-s', action='store_true',
+                    help='Skip classes that appear obfuscated instead of aborting')
 
 args = parser.parse_args()
 
@@ -61,7 +63,15 @@ if args.pkg_source == 'manual':
     if args.verbose:
         print("Including classes only in %s" % pkg)
 elif args.pkg_source == 'auto':
-    detected = queryAaptForPackageName(args.smaliv1) or queryAaptForPackageName(args.smaliv2)
+    detected = None
+    for path in (args.smaliv1, args.smaliv2):
+        try:
+            detected = queryAaptForPackageName(path)
+        except MainActivityNotFoundError:
+            print("No main activity found in %s" % path, file=sys.stderr)
+            sys.exit(0)
+        if detected:
+            break
     if detected:
         if args.verbose:
             print("Auto-detected package: %s" % detected, file=sys.stderr)
@@ -92,19 +102,33 @@ def process_input_file(input_path, verbose=False):
         # Assume it's already a ZIP with smali files
         return input_path, None
 
+temp_dirs_to_cleanup = []
+
 try:
     old = SmaliProject.SmaliProject()
     oldzip, oldtemp = process_input_file(args.smaliv1, args.verbose)
+    if oldtemp:
+        temp_dirs_to_cleanup.append(oldtemp)
     old.parseProject(oldzip, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
-    #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    if args.skip_obfuscated:
+        removed_old = old.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_old} obfuscated classes in old version", file=sys.stderr)
 
     mold, moldin = Metrics.countMethodsInProject(old)
 
     new = SmaliProject.SmaliProject()
     newzip, newtemp = process_input_file(args.smaliv2, args.verbose)
+    if newtemp:
+        temp_dirs_to_cleanup.append(newtemp)
     new.parseProject(newzip, pkg, args.exclude_lists, args.include_lists, 
                     include_unpackaged=args.include_unpackaged)
-    #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    if args.skip_obfuscated:
+        removed_new = new.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_new} obfuscated classes in new version", file=sys.stderr)
 
     mnew, mnewin = Metrics.countMethodsInProject(new)
 
@@ -133,6 +157,10 @@ try:
 except Metrics.ProjectObfuscatedException:
     print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
     sys.exit(1)
+finally:
+    for temp_dir in temp_dirs_to_cleanup:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 bases = [""]
 if args.with_innerclasses_split:
     bases = ["IN", "OUT"]

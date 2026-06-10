@@ -10,6 +10,62 @@ PACKAGEMATCHER = re.compile(b'package: name=\'(.*?)\'')
 dexfiles = re.compile('^classes[0-9]*.dex$')
 
 # Common Android system/library package prefixes to ignore when inferring
+ANDROID_NS = 'http://schemas.android.com/apk/res/android'
+
+
+class MainActivityNotFoundError(Exception):
+    pass
+
+
+def _get_attrib(elem, name):
+    val = elem.get(f'{{{ANDROID_NS}}}{name}')
+    return val if val is not None else elem.get(name)
+
+
+def _find_main_activity_package(tree, base_pkg):
+    root = tree.getroot()
+    application = root.find('application')
+    if application is None:
+        raise MainActivityNotFoundError(
+            "No <application> tag found in AndroidManifest.xml"
+        )
+
+    for child in application:
+        tag = child.tag.split('}', 1)[-1]
+        if tag not in ('activity', 'activity-alias'):
+            continue
+
+        for intent_filter in child.findall('intent-filter'):
+            has_main = False
+            has_launcher = False
+
+            for sub in intent_filter:
+                sub_tag = sub.tag.split('}', 1)[-1]
+                if sub_tag == 'action':
+                    name = _get_attrib(sub, 'name')
+                    if name == 'android.intent.action.MAIN':
+                        has_main = True
+                elif sub_tag == 'category':
+                    name = _get_attrib(sub, 'name')
+                    if name in (
+                        'android.intent.category.LAUNCHER',
+                        'android.intent.category.LEANBACK_LAUNCHER',
+                    ):
+                        has_launcher = True
+
+            if has_main and has_launcher:
+                activity_name = _get_attrib(child, 'name')
+                if activity_name:
+                    if activity_name.startswith('.'):
+                        activity_name = base_pkg + activity_name
+                    return activity_name.rsplit('.', 1)[0]
+
+    raise MainActivityNotFoundError(
+        "No activity with MAIN/LAUNCHER intent-filter "
+        "found in AndroidManifest.xml"
+    )
+
+
 SYSTEM_PACKAGES = {
     'android', 'dalvik', 'java', 'javax', 'kotlin', 'kotlinx',
     'okhttp', 'okio', 'retrofit2', 'rx', 'rxjava',
@@ -54,10 +110,9 @@ def _get_package_from_apk(apk_path):
             manifest_path = os.path.join(temp_dir, 'AndroidManifest.xml')
             if os.path.isfile(manifest_path):
                 tree = ET.parse(manifest_path)
-                root = tree.getroot()
-                pkg = root.get('package')
+                pkg = tree.getroot().get('package')
                 if pkg:
-                    return pkg
+                    return _find_main_activity_package(tree, pkg)
     except (subprocess.TimeoutExpired, FileNotFoundError, ET.ParseError):
         pass
     finally:
@@ -95,6 +150,17 @@ def _get_package_from_smali_zip(zip_path):
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 raw = zf.read('AndroidManifest.xml')
+            tree = ET.ElementTree(ET.fromstring(raw))
+            pkg = tree.getroot().get('package')
+            if pkg:
+                return _find_main_activity_package(tree, pkg)
+        except ET.ParseError:
+            pass
+        except MainActivityNotFoundError:
+            raise
+
+        # ---- Fallback: regex for binary AXML (package name only) ----
+        try:
             m = re.search(rb'package="([^"]+)"', raw)
             if m:
                 return m.group(1).decode('utf-8')

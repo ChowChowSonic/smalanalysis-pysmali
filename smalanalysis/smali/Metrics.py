@@ -88,6 +88,11 @@ class ProjectObfuscatedException(Exception):
     """Raised when the parser determines a project is too obfuscated to analyse reliably."""
 
 
+def checkObfuscation(project):
+    """Return ``True`` if *project* appears obfuscated."""
+    return project.isProjectObfuscated()
+
+
 def printName(m):
     """Return a human-readable ``"ClassName.methodSignature"`` string for a method object."""
     return "{}.{}".format(m.parent.getDisplayName(m.parent.name), m.getSignature())

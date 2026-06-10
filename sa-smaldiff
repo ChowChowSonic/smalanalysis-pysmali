@@ -61,6 +61,8 @@ parser.add_argument('--include-lists', '-i', type=str, nargs='*',
                     help='Files containing included list')
 parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
                     help='Do not split metrics for inner/outer classes')
+parser.add_argument('--skip-obfuscated', '-s', action='store_true',
+                    help='Skip classes that appear obfuscated instead of aborting')
 
 args = parser.parse_args()
 
@@ -80,14 +82,22 @@ if args.aggregateoperators and args.fulllinesofcode:
 try:
     old = SmaliProject.SmaliProject()
     old.parseProject(args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
-    #parseProject(old, args.smaliv1, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    if args.skip_obfuscated:
+        removed_old = old.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_old} obfuscated classes in old version", file=sys.stderr)
 
     mold, moldin = Metrics.countMethodsInProject(old)
 
     new = SmaliProject.SmaliProject()
     new.parseProject(args.smaliv2, pkg, args.exclude_lists, args.include_lists, 
                     include_unpackaged=args.include_unpackaged)
-    #parseProject(new, args.smaliv2, pkg, args.exclude_lists, args.include_lists, args.include_unpackaged)
+
+    if args.skip_obfuscated:
+        removed_new = new.removeObfuscatedClasses()
+        if args.verbose:
+            print(f"Skipped {removed_new} obfuscated classes in new version", file=sys.stderr)
 
     mnew, mnewin = Metrics.countMethodsInProject(new)
 

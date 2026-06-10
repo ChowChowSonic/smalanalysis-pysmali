@@ -69,28 +69,196 @@ class SmaliProject(object):
 
         pass
 
-    def isProjectObfuscated(self):
+    def getObfuscationScore(self):
         """
-        Heuristic check: if the project contains no classes, classes named
-        ``L;``, or more than 75 % of classes whose ``getBaseName()`` equals
-        ``getDisplayName()``, return ``True``.
-        """
-        if len(list(self.classes)) == 0:
-            return True
+        Compute a multi-signal obfuscation score for the project.
 
-        cntgood = 0
+        Returns a float in ``[0.0, 1.0]`` where 0 = likely clean,
+        1 = likely obfuscated.  Uses a weighted combination of:
+          - single-letter package segments (e.g. ``a/a/a``)
+          - default (no) package
+          - short class names (≤2 characters)
+          - numeric suffix in class names (e.g. ``Class1``)
+          - missing ``.source`` attribute
+          - malformed names (``L;``)
+          - methods with short (≤2 char) names
+          - fields with short (≤2 char) names
+        """
+        total = len(list(self.classes))
+        if total == 0:
+            return 1.0
+
+        single_letter_pkg = 0
+        no_pkg = 0
+        short_name = 0
+        numeric_name = 0
+        source_missing = 0
+        malformed_name = 0
+        short_methods = 0
+        total_eligible_methods = 0
+        short_fields = 0
+        total_fields = 0
 
         for c in self.classes:
-            if c.name is not None and c.name[0:2] == 'L;':
-                return True
+            if c.name is None:
+                continue
 
-            if c.getBaseName() == c.getDisplayName():
-                cntgood += 1
+            if len(c.name) >= 2 and c.name[0:2] == 'L;':
+                malformed_name += 1
+                continue
 
-        if len(list(self.classes)) / cntgood > 0.75:
+            internal = c.name[1:-1]
+
+            if '/' in internal:
+                pkg_path = internal[:internal.rfind('/')]
+                simple_name = internal[internal.rfind('/') + 1:]
+            else:
+                pkg_path = ''
+                simple_name = internal
+
+            if '$' in simple_name:
+                simple_name = simple_name.split('$')[-1]
+
+            if not pkg_path:
+                no_pkg += 1
+
+            if pkg_path and all(len(s) == 1 for s in pkg_path.split('/')):
+                single_letter_pkg += 1
+
+            if len(simple_name) <= 2:
+                short_name += 1
+
+            if simple_name and simple_name[-1].isdigit():
+                numeric_name += 1
+
+            if not c.source:
+                source_missing += 1
+
+            for m in c.methods:
+                if m.name in ('<init>', '<clinit>'):
+                    continue
+                if re.match(r'on[A-Z]', m.name):
+                    continue
+                total_eligible_methods += 1
+                if len(m.name) <= 2:
+                    short_methods += 1
+
+            total_fields += len(c.fields)
+            short_fields += sum(1 for f in c.fields if len(f.name) <= 2)
+
+        valid = total - malformed_name
+        if valid == 0:
+            return 1.0
+
+        def scale(val, low, high):
+            if val <= low:
+                return 0.0
+            if val >= high:
+                return 1.0
+            return (val - low) / (high - low)
+
+        scores = {
+            'single_letter_pkg': scale(single_letter_pkg / valid, 0.05, 0.60),
+            'no_pkg': scale(no_pkg / valid, 0.02, 0.20),
+            'short_name': scale(short_name / valid, 0.05, 0.50),
+            'numeric_name': scale(numeric_name / valid, 0.05, 0.30),
+            'source_missing': scale(source_missing / valid, 0.10, 0.80),
+            'malformed_name': scale(malformed_name / total, 0.0, 0.05),
+            'short_method_name': scale(
+                short_methods / total_eligible_methods if total_eligible_methods else 0,
+                0.05, 0.50
+            ),
+            'short_field_name': scale(
+                short_fields / total_fields if total_fields else 0,
+                0.05, 0.50
+            ),
+        }
+
+        weights = {
+            'single_letter_pkg': 0.20,
+            'no_pkg': 0.10,
+            'short_name': 0.12,
+            'numeric_name': 0.07,
+            'source_missing': 0.07,
+            'malformed_name': 0.10,
+            'short_method_name': 0.15,
+            'short_field_name': 0.07,
+        }
+
+        return sum(scores[k] * weights[k] for k in weights)
+
+    def isProjectObfuscated(self, threshold=0.5):
+        """
+        Return ``True`` when :meth:`getObfuscationScore` exceeds *threshold*.
+        """
+        return self.getObfuscationScore() > threshold
+
+    @staticmethod
+    def isClassObfuscated(clazz):
+        """Return ``True`` if a single class appears obfuscated."""
+        if clazz.name is None:
+            return False
+
+        if len(clazz.name) >= 2 and clazz.name[0:2] == 'L;':
             return True
 
+        internal = clazz.name[1:-1]
+
+        if '/' in internal:
+            pkg_path = internal[:internal.rfind('/')]
+            simple_name = internal[internal.rfind('/') + 1:]
+        else:
+            pkg_path = ''
+            simple_name = internal
+
+        if '$' in simple_name:
+            simple_name = simple_name.split('$')[-1]
+
+        if pkg_path and all(len(s) == 1 for s in pkg_path.split('/')):
+            if len(simple_name) <= 2 or not clazz.source:
+                return True
+
+        if not pkg_path and len(simple_name) <= 2:
+            return True
+
+        if len(simple_name) == 1 and not clazz.source:
+            return True
+
+        if simple_name and simple_name[-1].isdigit():
+            return True
+
+        eligible_methods = [
+            m for m in clazz.methods
+            if m.name not in ('<init>', '<clinit>')
+            and not re.match(r'on[A-Z]', m.name)
+        ]
+        if eligible_methods:
+            short_methods = sum(1 for m in eligible_methods if len(m.name) <= 2)
+            if short_methods / len(eligible_methods) > 0.5:
+                return True
+
+        if clazz.fields:
+            short_fields = sum(1 for f in clazz.fields if len(f.name) <= 2)
+            if short_fields / len(clazz.fields) > 0.5:
+                return True
+
         return False
+
+    def removeObfuscatedClasses(self):
+        """Remove all obfuscated classes from this project in-place.
+
+        Returns the number of classes removed.
+        """
+        removed = 0
+        remaining = []
+        for c in self.classes:
+            if SmaliProject.isClassObfuscated(c):
+                removed += 1
+            else:
+                remaining.append(c)
+        self.classes = remaining
+        self.classesdict = {c.name: c for c in remaining}
+        return removed
 
     @staticmethod
     def shouldAnalyzeThisClass(classname, skips=None, includes=None, default=True):
