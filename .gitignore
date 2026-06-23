@@ -2,7 +2,6 @@
 trash
 *.pyc
 *.smali
-smali.zip
 venv
 .idea
 .vscode

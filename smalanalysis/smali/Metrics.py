@@ -12,7 +12,8 @@ added/removed instruction sets).
 """
 
 from smalanalysis.smali import ChangesTypes, SmaliObject
-import sys
+
+
 def isEvolution(l):
     """
     Return ``True`` when *every* diff entry in *l* is either a
@@ -63,34 +64,6 @@ def isChange(l):
     modifications, etc.
     """
     return len(l) > 0 and not isEvolution(l) and not isMethodBodyChangeOnly(l)
-
-
-def skipThisClass(skips, clazz):
-    """
-    Return ``True`` if *clazz* should be skipped based on the exclusion
-    set *skips*.
-
-    Checks both the old and new version of the class (whichever exists)
-    against the skip list.
-    """
-    if clazz[0][1] is not None:
-        if SmaliObject.SmaliClass.getDisplayName(clazz[0][1].name) not in skips:
-            return True
-
-    if clazz[0][0] is not None:
-        if SmaliObject.SmaliClass.getDisplayName(clazz[0][0].name) not in skips:
-            return True
-
-    return False
-
-
-class ProjectObfuscatedException(Exception):
-    """Raised when the parser determines a project is too obfuscated to analyse reliably."""
-
-
-def printName(m):
-    """Return a human-readable ``"ClassName.methodSignature"`` string for a method object."""
-    return "{}.{}".format(m.parent.getDisplayName(m.parent.name), m.getSignature())
 
 
 keys = ["#C-", "#C+", "#M-", "#M+", "E", "B", "A", "D", "C", "MA", "MD", "MR", "MC", "MRev", "FA", "FD", "FC", "FR", "CA", "CD", "CC"]
@@ -241,14 +214,19 @@ def countMethodsInProject(project):
         - *outer_count*: methods in top-level classes
         - *inner_count*: methods in inner (nested) classes
     """
+    inner_class_ids = set()
+    for c in project.classes:
+        for ic in c.innerclasses:
+            inner_class_ids.add(id(c.innerclasses[ic]))
+
     cpt = 0
     incpt = 0
 
     for c in project.classes:
-        cpt += len(c.methods)
-
-        for ic in c.innerclasses:
-            incpt += countMethodsInClass(c.innerclasses[ic])
+        if id(c) in inner_class_ids:
+            incpt += len(c.methods)
+        else:
+            cpt += len(c.methods)
 
     return cpt, incpt
 

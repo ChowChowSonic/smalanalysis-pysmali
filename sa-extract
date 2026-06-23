@@ -1,232 +1,119 @@
 #!/usr/bin/env python
 
-# Computing Metrics
-# Author: Vincenzo Musco (http://www.vmusco.com)
-# Creation date: 2017-09-15
-"""
-Disassemble an APK into a smali ZIP archive (and optionally list class names).
-
-Uses ``apktool`` to decode the APK, then bundles all ``.smali`` files into
-a single ZIP file for downstream analysis.
-"""
-
-import sys
+import argparse
 import os
+import sys
 import pathlib
-import smalanalysis
 import logging
-from smalanalysis.smali import SmaliObject, ChangesTypes, SmaliProject, Metrics
-from smalanalysis.smali.SmaliObject import disassemble_apk_to_zip
 import re
-import tempfile
-import shutil
-import subprocess
-import zipfile
+
+from smalanalysis.smali import SmaliProject
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', stream=sys.stderr)
 
-parser = argparse.ArgumentParser(description='Compute evolution metrics between two smali versions.')
-parser.add_argument('smaliv1', type=str,
-                    help='Version 1 (APK file or ZIP with smali)')
-parser.add_argument('smaliv2', type=str,
-                    help='Version 2 (APK file or ZIP with smali)')
-parser.add_argument('output_dir', type=str,
-                    help='Output directory for extracted functions')
-parser.add_argument('--verbose', '-v', action='store_true',
-                    help='Show metrics details')
-parser.add_argument('--fulllinesofcode', '-f', action='store_true',
-                    help='Show full lines instead of opcodes for differences')
-parser.add_argument('--aggregateoperators', '-a', action='store_true',
-                    help='Aggregate the operator by their first keywork.')
-parser.add_argument('--include-unpackaged', '-U', action='store_true',
-                    help='Includes classes which are not in a package')
-parser.add_argument('--exclude-lists', '-e', type=str, nargs='*',
-                    help='Files containing excluded list')
-parser.add_argument('--include-lists', '-i', type=str, nargs='*',
-                    help='Files containing included list')
-parser.add_argument('--no-innerclasses-split', '-I', action='store_true',
-                    help='Do not split metrics for inner/outer classes')
-parser.add_argument('--filter-classes', '-F', type=str,
-                    help='File containing list of functions to filter for (format: class_name: function_name, one per line)')
-parser.add_argument('--filter-instructions-regex', '-R', type=str,
-                    help='Regex pattern to filter instructions')
+parser = argparse.ArgumentParser(description='Extract changed methods between two APK versions.')
+parser.add_argument('apk1', type=str, help='Version 1 (APK file)')
+parser.add_argument('apk2', type=str, help='Version 2 (APK file)')
+parser.add_argument('output_dir', type=str, help='Output directory')
+parser.add_argument('--verbose', '-v', action='store_true')
+parser.add_argument('--include-unpackaged', '-U', action='store_true')
+parser.add_argument('--exclude-lists', '-e', type=str, nargs='*')
+parser.add_argument('--include-lists', '-i', type=str, nargs='*')
+parser.add_argument('--filter-classes', '-F', type=str)
+parser.add_argument('--filter-instructions-regex', '-R', type=str)
+parser.add_argument('--skip-obfuscated', '-s', action='store_true')
 args = parser.parse_args()
 
-def should_filter_function(class_name, method_name):
-    """Check if a function should be included based on filter functions"""
-    if filter_functions is None:
-        return True  # No filtering applied
-    # Clean class name (remove L and ; if present)
-    clean_class = class_name.rstrip(';').lstrip('L')
-
-    # Create the filter key in the expected format: class_name: function_name
-    filter_key = f"{clean_class}: {method_name}"
-
-    if args.verbose:
-        print(f"DEBUG: Checking function '{filter_key}' against {len(filter_functions)} filter functions")
-
-    for pattern in filter_functions:
-        try:
-            # Convert wildcard patterns to regex
-            if re.match(pattern, filter_key):
-                if args.verbose:
-                    print(f"DEBUG: Regex match found: {pattern}")
-                return True
-
-        except re.error:
-            # If regex is invalid, skip it
-            if args.verbose:
-                print(f"DEBUG: Invalid regex pattern: {pattern}")
-            continue
-
-    if args.verbose:
-        print(f"DEBUG: No match found")
-        print(f"DEBUG: Sample filter functions: {list(filter_functions)[:3]}")
-
-    return False
-
-def is_apk_file(filepath):
-    """Check if a file is an APK by extension"""
-    return filepath.lower().endswith('.apk')
-
-def process_input_file(input_path, verbose=False):
-    """
-    Process an input file - if it's an APK, disassemble it first.
-    Returns (path_to_zip, temp_dir) where temp_dir is None if no temp files were created.
-    """
-    if is_apk_file(input_path):
-        zip_path, temp_dir = disassemble_apk_to_zip(input_path, verbose)
-        return zip_path, temp_dir
-    else:
-        # Assume it's already a ZIP with smali files
-        return input_path, None
-
-if args.aggregateoperators and args.fulllinesofcode:
-    print("Aggregation and full lines cannot be enabled at the same time!")
-    sys.exit(1)
-
-def get_package_path(class_name):
-    """Convert class name to package directory path"""
-    # Convert Lcom/example/Class; to com/example/Class
-    if class_name.startswith('L'):
-        class_name = class_name[1:]
-    if class_name.endswith(';'): 
-        class_name = class_name[:-1]
-    return class_name.replace('/', os.sep).replace('.', os.sep)
-
-def write_function_to_file(method_obj, output_base_dir, version_name):
-    """Write a method's smali code to a file"""
-    if method_obj is None:
-        return
-    
-    class_name = method_obj.getFullSignature().split(':')[0].strip()
-    method_name = method_obj.getFullSignature().split('(')[0].split(' ')[-1].split('.')[-1].replace('<', '__').replace('>', '__')
-
-    # Get package path and create directory structure
-    package_path = get_package_path(class_name)
-    class_dir = output_base_dir / package_path
-    class_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Write the method content
-    output_file = class_dir / f"{method_name}.smali"
-    
-    try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            # Write the method's smali code
-            if args.filter_instructions_regex:
-                f.write(f"# Method: {method_obj.getFullSignature()}\n")
-                f.write(f"# Filtered by regex: {args.filter_instructions_regex}\n")
-            else:
-                f.write(f"# Method: {method_obj.getFullSignature()}\n")
-            
-            # Get the method content - this depends on the smalanalysis library structure
-            # We'll need to access the actual smali code from the method object
-            if hasattr(method_obj, 'getLines'):
-                for line in method_obj.getLines(): 
-                    if args.filter_instructions_regex:
-                        try:
-                            if re.search(args.filter_instructions_regex, line):
-                                f.write(line+'\n')
-                        except re.error:
-                            pass
-                    else:
-                        f.write(line+'\n')
-            elif hasattr(method_obj, 'toString'):
-                f.write(str(method_obj))
-            else:
-                f.write(f"# Method content not available\n")
-                f.write(f"# Signature: {method_obj.getFullSignature()}\n")
-        
-        if args.verbose:
-            print(f"Wrote {version_name} version to: {output_file}")
-            
-    except Exception as e:
-        print(f"Error writing to {output_file}: {e}", file=sys.stderr)
-
-# Create output directory structure
-output_dir = pathlib.Path(args.output_dir)
-new_dir = output_dir / "new"
-old_dir = output_dir / "old"
-
-if args.verbose and args.exclude_lists:
-    print("Ignoring classes includes in these files: %s" % args.exclude_lists)
-
-# Load filter functions if specified
 filter_functions = None
 if args.filter_classes:
     try:
         with open(args.filter_classes, 'r') as f:
             filter_functions = set()
             for line in f:
-                line = "^"+line.strip()+"$"
+                line = "^" + line.strip() + "$"
                 if line and not line.startswith('#') and ':' in line:
                     filter_functions.add(re.compile(line, flags=re.IGNORECASE))
-            if len(filter_functions) == 0:
+            if not filter_functions:
                 filter_functions = None
-        if args.verbose:
-            print(f"Loaded {len(filter_functions) if filter_functions else 0} functions to filter from {args.filter_classes}")
     except Exception as e:
         print(f"Error reading filter functions file: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-temp_dirs_to_cleanup = []
+def should_filter_function(class_name, method_name):
+    if filter_functions is None:
+        return True
+    clean_class = class_name.rstrip(';').lstrip('L')
+    filter_key = f"{clean_class}: {method_name}"
+    for pattern in filter_functions:
+        try:
+            if re.match(pattern, filter_key):
+                return True
+        except re.error:
+            continue
+    return False
 
-if args.verbose:
-    print(f"Processing input files...")
+
+def get_package_path(class_name):
+    if class_name.startswith('L'):
+        class_name = class_name[1:]
+    if class_name.endswith(';'):
+        class_name = class_name[:-1]
+    return class_name.replace('/', os.sep).replace('.', os.sep)
+
+
+def write_function_to_file(method_obj, output_base_dir, version_name):
+    if method_obj is None:
+        return
+    class_name = method_obj.getFullSignature().split(':')[0].strip()
+    method_name = method_obj.getFullSignature().split('(')[0].split(' ')[-1].split('.')[-1].replace('<', '__').replace('>', '__')
+    package_path = get_package_path(class_name)
+    class_dir = output_base_dir / package_path
+    class_dir.mkdir(parents=True, exist_ok=True)
+    output_file = class_dir / f"{method_name}.smali"
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(f"# Method: {method_obj.getFullSignature()}\n")
+            if hasattr(method_obj, 'getLines'):
+                for line in method_obj.getLines():
+                    if args.filter_instructions_regex:
+                        try:
+                            if re.search(args.filter_instructions_regex, line):
+                                f.write(line + '\n')
+                        except re.error:
+                            pass
+                    else:
+                        f.write(line + '\n')
+            elif hasattr(method_obj, 'toString'):
+                f.write(str(method_obj))
+            else:
+                f.write(f"# Method content not available\n")
+                f.write(f"# Signature: {method_obj.getFullSignature()}\n")
+        if args.verbose:
+            print(f"Wrote {version_name} version to: {output_file}")
+    except Exception as e:
+        print(f"Error writing to {output_file}: {e}", file=sys.stderr)
+
+
+output_dir = pathlib.Path(args.output_dir)
+new_dir = output_dir / "new"
+old_dir = output_dir / "old"
 
 try:
-    # Process input files (disassemble APKs if needed)
-    old_input, old_temp = process_input_file(args.smaliv1, args.verbose)
-    if old_temp:
-        temp_dirs_to_cleanup.append(old_temp)
+    old, _ = SmaliProject.SmaliProject.from_apk(
+        args.apk1, skiplists=args.exclude_lists, includelist=args.include_lists,
+        include_unpackaged=args.include_unpackaged,
+    )
+    if args.skip_obfuscated:
+        old.removeObfuscatedClasses()
 
-    new_input, new_temp = process_input_file(args.smaliv2, args.verbose)
-    if new_temp:
-        temp_dirs_to_cleanup.append(new_temp)
+    new, _ = SmaliProject.SmaliProject.from_apk(
+        args.apk2, skiplists=args.exclude_lists, includelist=args.include_lists,
+        include_unpackaged=args.include_unpackaged,
+    )
+    if args.skip_obfuscated:
+        new.removeObfuscatedClasses()
 
-    if args.verbose:
-        print(f"Parsing smali projects...")
-        if old_temp:
-            print(f"  Old (from APK): {old_input}")
-        else:
-            print(f"  Old: {old_input}")
-        if new_temp:
-            print(f"  New (from APK): {new_input}")
-        else:
-            print(f"  New: {new_input}")
-
-    old = SmaliProject.SmaliProject()
-    old.parseProject(old_input, None, args.exclude_lists, args.include_lists, args.include_unpackaged)
-
-    new = SmaliProject.SmaliProject()
-    new.parseProject(new_input, None, args.exclude_lists, args.include_lists,
-                    include_unpackaged=args.include_unpackaged)
-
-    if args.verbose:
-        print(f"Creating output directory: {output_dir}")
-
-    # Create directories
     output_dir.mkdir(parents=True, exist_ok=True)
     new_dir.mkdir(parents=True, exist_ok=True)
     old_dir.mkdir(parents=True, exist_ok=True)
@@ -235,46 +122,21 @@ try:
     for x in diff:
         if x is None or x[0] is None or x[0][0] is None:
             continue
-
         class_name = x[0][0].name.replace('/', '.')
-        if args.verbose:
-            print(f"Processing class: {class_name}")
-
         (sames, diffs) = x[0][0].methodsComparison(x[0][1], [])
         for fn in diffs:
             old_method = fn[0]
             new_method = fn[1]
-
-            # Get method name for filtering
             method_obj = old_method if old_method is not None else new_method
             if method_obj is None:
                 continue
-
-            # Extract method name from signature
-            method_signature = method_obj.getFullSignature()
-            method_name = method_signature.split('(')[0].split(' ')[-1].split('.')[-1]
-
-            # Check if this function should be included based on filter
+            method_name = method_obj.getFullSignature().split('(')[0].split(' ')[-1].split('.')[-1]
             if not should_filter_function(class_name, method_name):
                 continue
-
-            # Write both old and new versions
             if old_method is not None:
                 write_function_to_file(old_method, old_dir, "old")
             if new_method is not None:
                 write_function_to_file(new_method, new_dir, "new")
-
-            # Print the signature for reference
-            differ = old_method if old_method is not None else new_method
-            if args.verbose:
-                print(differ.getFullSignature())
-
-except Metrics.ProjectObfuscatedException:
-    print("This project is obfuscated. Unable to proceed.", file=sys.stderr)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
-finally:
-    # Cleanup temp directories
-    for temp_dir in temp_dirs_to_cleanup:
-        if args.verbose:
-            print(f"Cleaning up temp directory: {temp_dir}")
-        shutil.rmtree(temp_dir, ignore_errors=True)

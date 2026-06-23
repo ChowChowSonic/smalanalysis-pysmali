@@ -1,9 +1,9 @@
 from setuptools import setup
 
 setup(name='smalanalysis',
-      version='0.1a1',
-      description='Android Bytecode Analysis Tools',
-      long_description='Android Bytecode Analysis Tools',
+      version='0.1a2',
+      description='Android Bytecode Analysis Tools (Androguard-based)',
+      long_description='Android Bytecode Analysis Tools using Androguard',
       classifiers=[
         'Development Status :: 3 - Alpha',
         'License :: OSI Approved :: MIT License',
@@ -11,13 +11,14 @@ setup(name='smalanalysis',
         'Topic :: Software Development',
       ],
       python_requires='~=3.6',
-      keywords='smali android apk baksmali',
+      keywords='smali android apk androguard',
       url='https://github.com/v-m/smalanalysis',
       author='Vincenzo Musco',
       author_email='muscovin@gmail.com',
       license='MIT',
-      packages=['smalanalysis','smalanalysis.smali', 'smalanalysis.tools'],
-      install_requires=[],
-      scripts=['bin/sa-disassemble', 'bin/sa-including-debug', 'bin/sa-metrics'],
+      packages=['smalanalysis', 'smalanalysis.smali', 'smalanalysis.tools'],
+      install_requires=[
+          'androguard>=4.1.0',
+      ],
       include_package_data=True,
       zip_safe=False)

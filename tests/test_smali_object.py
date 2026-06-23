@@ -579,19 +579,6 @@ class TestSmaliClass(unittest.TestCase):
         self.assertIs(hierarchy[0], mid)
         self.assertIs(hierarchy[1], base)
 
-    def test_equals_self(self):
-        a = SmaliClass(None)
-        a.name = "Lcom/Foo;"
-        b = SmaliClass(None)
-        b.name = "Lcom/Foo;"
-        self.assertTrue(a.equals(b))
-
-    def test_equals_different_name(self):
-        a = SmaliClass(None)
-        a.name = "Lcom/Foo;"
-        b = SmaliClass(None)
-        b.name = "Lcom/Bar;"
-        self.assertFalse(a.equals(b))
 
 
 if __name__ == "__main__":
