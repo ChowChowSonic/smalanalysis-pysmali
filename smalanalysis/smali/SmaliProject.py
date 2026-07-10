@@ -7,7 +7,12 @@ androguard.  Two projects can be compared to produce a ``diff`` result
 that drives the metrics computation.
 """
 
+import logging
 import os
+
+logging.getLogger('androguard').setLevel(logging.CRITICAL)
+logging.getLogger('androwarn').setLevel(logging.CRITICAL)
+os.environ["LOGURU_LEVEL"] = "CRITICAL"
 
 import smalanalysis.smali.SmaliObject
 from smalanalysis.smali import ComparisonIgnores
@@ -21,17 +26,10 @@ _init_cache: dict = {}
 
 def _init_androguard(apk_path):
     """Import androguard and return ``(dex_list, dx_analysis)``."""
-    import logging
-
     resolved = os.path.realpath(apk_path)
     cached = _init_cache.get(resolved)
     if cached is not None:
         return cached
-
-    os.environ.setdefault("LOGURU_LEVEL", "CRITICAL")
-
-    logging.getLogger('androguard').setLevel(logging.CRITICAL)
-    logging.getLogger('androwarn').setLevel(logging.CRITICAL)
 
     from androguard.misc import AnalyzeAPK
     _, dex_list, dx = AnalyzeAPK(apk_path)
@@ -61,7 +59,7 @@ class SmaliProject(object):
         if total == 0:
             return 1.0
 
-        single_letter_pkg = no_pkg = short_name = numeric_name = source_missing = malformed_name = 0
+        single_letter_pkg = short_pkg = no_pkg = short_name = numeric_name = source_missing = malformed_name = 0
 
         for c in self.classes:
             if c.name is None:
@@ -83,7 +81,7 @@ class SmaliProject(object):
 
             if not pkg_path:
                 no_pkg += 1
-            if pkg_path and all(len(s) == 1 for s in pkg_path.split('/')):
+            if pkg_path and all(len(s) <= 2 for s in pkg_path.split('/')):
                 single_letter_pkg += 1
             if len(simple_name) <= 2:
                 short_name += 1
@@ -104,7 +102,7 @@ class SmaliProject(object):
             return (val - low) / (high - low)
 
         scores = {
-            'single_letter_pkg': scale(single_letter_pkg / valid, 0.05, 0.60),
+            'short_pkg': scale(short_pkg / valid, 0.05, 0.60),
             'no_pkg': scale(no_pkg / valid, 0.02, 0.20),
             'short_name': scale(short_name / valid, 0.05, 0.50),
             'numeric_name': scale(numeric_name / valid, 0.05, 0.30),
@@ -112,7 +110,7 @@ class SmaliProject(object):
             'malformed_name': scale(malformed_name / total, 0.0, 0.05),
         }
         weights = {
-            'single_letter_pkg': 0.30, 'no_pkg': 0.15, 'short_name': 0.20,
+            'short_pkg': 0.30, 'no_pkg': 0.15, 'short_name': 0.20,
             'numeric_name': 0.10, 'source_missing': 0.10, 'malformed_name': 0.15,
         }
         return sum(scores[k] * weights[k] for k in weights)
@@ -134,7 +132,7 @@ class SmaliProject(object):
         if '$' in simple_name:
             simple_name = simple_name.split('$')[-1]
 
-        if pkg_path and all(len(s) == 1 for s in pkg_path.split('/')):
+        if pkg_path and all(len(s) <= 2 for s in pkg_path.split('/')):
             if len(simple_name) <= 2 or not clazz.source:
                 return True
         if not pkg_path and len(simple_name) <= 2:
@@ -142,6 +140,86 @@ class SmaliProject(object):
         if len(simple_name) == 1 and not clazz.source:
             return True
         return False
+
+    @staticmethod
+    def getClassObfuscationDetails(clazz):
+        """
+        Return a dict of per-class obfuscation heuristics for debugging.
+
+        The returned keys match the individual checks in
+        ``isClassObfuscated()`` plus the final bool result.
+        """
+        details = {
+            'class_name': getattr(clazz, 'name', None),
+            'pkg_path': '',
+            'simple_name': '',
+            'pkg_max_seg_len': 0,
+            'has_source': bool(getattr(clazz, 'source', None)),
+            'malformed_name': False,
+            'short_pkg_segments': False,
+            'no_pkg': False,
+            'short_name': False,
+            'source_missing': True,
+            'numeric_name': False,
+            'short_pkg_and_short_or_no_source': False,
+            'no_pkg_and_short_name': False,
+            'single_char_and_no_source': False,
+            'is_obfuscated': False,
+        }
+
+        name = getattr(clazz, 'name', None)
+        if name is None:
+            details['source_missing'] = not details['has_source']
+            return details
+
+        details['source_missing'] = not bool(getattr(clazz, 'source', None))
+
+        if len(name) >= 2 and name[0:2] == 'L;':
+            details['malformed_name'] = True
+            details['is_obfuscated'] = True
+            return details
+
+        internal = name[1:-1]
+        if '/' in internal:
+            details['pkg_path'] = internal[:internal.rfind('/')]
+            details['simple_name'] = internal[internal.rfind('/') + 1:]
+        else:
+            details['pkg_path'] = ''
+            details['simple_name'] = internal
+
+        if '$' in details['simple_name']:
+            details['simple_name'] = details['simple_name'].split('$')[-1]
+
+        simple = details['simple_name']
+        pkg = details['pkg_path']
+
+        if pkg:
+            segments = pkg.split('/')
+            details['pkg_max_seg_len'] = max(len(s) for s in segments)
+            details['short_pkg_segments'] = all(len(s) <= 2 for s in segments)
+        else:
+            details['no_pkg'] = True
+
+        details['short_name'] = len(simple) <= 2
+        details['numeric_name'] = bool(simple and simple[-1].isdigit())
+
+        if details['short_pkg_segments'] and (details['short_name'] or details['source_missing']):
+            details['short_pkg_and_short_or_no_source'] = True
+
+        if details['no_pkg'] and details['short_name']:
+            details['no_pkg_and_short_name'] = True
+
+        if len(simple) == 1 and details['source_missing']:
+            details['single_char_and_no_source'] = True
+
+        details['is_obfuscated'] = (
+            details['malformed_name']
+            or details['short_pkg_and_short_or_no_source']
+            or details['no_pkg_and_short_name']
+            or details['single_char_and_no_source']
+        )
+
+        return details
 
     def removeObfuscatedClasses(self):
         removed = 0
@@ -358,6 +436,31 @@ class SmaliProject(object):
         unmatchednew = [new.innerclasses[k] for k in newk - oldk]
 
         return matched, unmatchedold, unmatchednew
+
+    @staticmethod
+    def writeObfuscationCSV(project, output_path):
+        """
+        Write per-class obfuscation heuristic details to a CSV file.
+
+        Args:
+            project: A ``SmaliProject`` instance.
+            output_path: Path for the output CSV file.
+        """
+        import csv
+
+        with open(output_path, 'w', newline='') as f:
+            fieldnames = [
+                'class_name', 'pkg_path', 'simple_name', 'pkg_max_seg_len',
+                'has_source', 'malformed_name', 'short_pkg_segments', 'no_pkg',
+                'short_name', 'source_missing', 'numeric_name',
+                'short_pkg_and_short_or_no_source',
+                'no_pkg_and_short_name', 'single_char_and_no_source',
+                'is_obfuscated',
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for c in project.classes:
+                writer.writerow(SmaliProject.getClassObfuscationDetails(c))
 
     @classmethod
     def from_apk(cls, apk_path, package=None, skiplists=None, includelist=None,
