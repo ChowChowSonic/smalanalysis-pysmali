@@ -27,11 +27,12 @@ args = parser.parse_args()
 filter_functions = None
 if args.filter_classes:
     try:
-        with open(args.filter_classes, 'r') as f:
+        with open(args.filter_classes, 'r', encoding='utf-8') as f:
             filter_functions = set()
             for line in f:
                 line = "^" + line.strip() + "$"
                 if line and not line.startswith('#') and ':' in line:
+                    line = line.replace('[', '\\[')
                     filter_functions.add(re.compile(line, flags=re.IGNORECASE))
             if not filter_functions:
                 filter_functions = None

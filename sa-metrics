@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import os
 import logging
 from smalanalysis.smali import SmaliProject, Metrics
 
@@ -18,6 +19,9 @@ parser.add_argument('--exclude-lists', '-e', type=str, nargs='*')
 parser.add_argument('--include-lists', '-i', type=str, nargs='*')
 parser.add_argument('--with-innerclasses-split', '-I', action='store_true')
 parser.add_argument('--skip-obfuscated', '-s', action='store_true')
+parser.add_argument('--dump-obfuscation-csv', '-d', type=str, metavar='PATH',
+                    help='Write per-class obfuscation heuristic details to CSV '
+                         '(appends .old.csv / .new.csv per APK)')
 args = parser.parse_args()
 
 pkg = None
@@ -31,18 +35,25 @@ try:
         args.apk1, pkg, skiplists=args.exclude_lists, includelist=args.include_lists,
         include_unpackaged=args.include_unpackaged,
     )
-    if args.skip_obfuscated:
-        old.removeObfuscatedClasses()
-
-    mold, moldin = Metrics.countMethodsInProject(old)
 
     new, _ = SmaliProject.SmaliProject.from_apk(
         args.apk2, pkg, skiplists=args.exclude_lists, includelist=args.include_lists,
         include_unpackaged=args.include_unpackaged,
     )
+
+    if args.dump_obfuscation_csv:
+        base = args.dump_obfuscation_csv
+        old_csv = base + '.old.csv'
+        new_csv = base + '.new.csv'
+        SmaliProject.SmaliProject.writeObfuscationCSV(old, old_csv)
+        SmaliProject.SmaliProject.writeObfuscationCSV(new, new_csv)
+        print(f"Obfuscation details written to {old_csv} and {new_csv}", file=sys.stderr)
+
     if args.skip_obfuscated:
+        old.removeObfuscatedClasses()
         new.removeObfuscatedClasses()
 
+    mold, moldin = Metrics.countMethodsInProject(old)
     mnew, mnewin = Metrics.countMethodsInProject(new)
     diff = old.differences(new, [])
     metrics = {}
