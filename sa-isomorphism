@@ -1,0 +1,468 @@
+#!/usr/bin/env python
+
+import argparse
+import csv
+import logging
+import re
+import sys
+from collections import Counter, defaultdict
+
+logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] %(message)s', stream=sys.stderr)
+
+log = logging.getLogger(__name__)
+
+import numpy as np
+
+from smalanalysis.smali import SmaliProject as SmaliProjectModule
+SmaliProject = SmaliProjectModule.SmaliProject
+
+INVOKE_RE = re.compile(
+    r'(invoke-[\w/]+)\s*\{[^}]*\}\s*,\s*(L[^;]*;)->([^(]+)\(([^)]*)\)(\S*)'
+)
+
+INVOKE_TYPE_MAP = {
+    'invoke-virtual': 'virtual', 'invoke-virtual/range': 'virtual',
+    'invoke-static': 'static', 'invoke-static/range': 'static',
+    'invoke-direct': 'direct', 'invoke-direct/range': 'direct',
+    'invoke-interface': 'interface', 'invoke-interface/range': 'interface',
+    'invoke-super': 'super', 'invoke-super/range': 'super',
+    'invoke-custom': 'custom', 'invoke-polymorphic': 'polymorphic',
+}
+
+BRANCH_RE = re.compile(r'^\s*(if-|goto|packed-switch|sparse-switch)')
+
+FEATURE_KEYS = [
+    'in_degree', 'out_degree',
+    'ext_android', 'ext_java', 'ext_kotlin', 'ext_other',
+    'invoke_virtual', 'invoke_static', 'invoke_direct', 'invoke_interface',
+    'num_params', 'num_instructions', 'has_branches',
+]
+
+
+def get_package_name(class_name):
+    if class_name is None:
+        return None
+    internal = class_name[1:-1]
+    if '/' in internal:
+        return internal[:internal.rfind('/')]
+    return ''
+
+
+def pkg_display(pkg):
+    if not pkg:
+        return '(default)'
+    return pkg.replace('/', '.')
+
+
+def categorize_external(class_name):
+    if class_name.startswith('Landroid/'):
+        return 'android'
+    if class_name.startswith('Landroidx/'):
+        return 'androidx'
+    if class_name.startswith('Ljava/') or class_name.startswith('Ljavax/'):
+        return 'java'
+    if class_name.startswith('Lkotlin/') or class_name.startswith('Lkotlinx/'):
+        return 'kotlin'
+    return 'other'
+
+
+def get_method_key(method):
+    return method.getFullSignature()
+
+
+def get_methods_in_package(classes):
+    methods = {}
+    for cls in classes:
+        if cls is None:
+            continue
+        for method in cls.methods:
+            if method is None:
+                continue
+            key = get_method_key(method)
+            methods[key] = method
+    return methods
+
+
+def extract_method_features(method, package_name):
+    features = {k: 0 for k in FEATURE_KEYS}
+    features['num_params'] = len(method.params)
+    features['num_instructions'] = len(method.getCleanLines())
+
+    internal_calls = []
+
+    for line in method.getLines():
+        if BRANCH_RE.match(line):
+            features['has_branches'] = 1
+
+        m = INVOKE_RE.search(line)
+        if not m:
+            continue
+
+        invoke_full = m.group(1)
+        callee_class = m.group(2)
+        callee_method = m.group(3)
+        callee_params = m.group(4)
+        callee_ret = m.group(5)
+
+        invoke_type = INVOKE_TYPE_MAP.get(invoke_full)
+        if invoke_type:
+            features[f'invoke_{invoke_type}'] += 1
+
+        features['out_degree'] += 1
+
+        callee_key = f'{callee_class}->{callee_method}({callee_params}){callee_ret}'
+        callee_pkg = get_package_name(callee_class)
+
+        if callee_pkg == package_name:
+            internal_calls.append(callee_key)
+        else:
+            cat = categorize_external(callee_class)
+            features[f'ext_{cat}'] += 1
+
+    return features, internal_calls
+
+
+def build_package_graphs(project):
+    pkgs = defaultdict(list)
+    for c in project.classes:
+        if c and c.name:
+            pkg = get_package_name(c.name)
+            pkgs[pkg].append(c)
+
+    graph_data = {}
+    for pkg, classes in pkgs.items():
+        methods = get_methods_in_package(classes)
+        if not methods:
+            graph_data[pkg] = None
+            continue
+
+        method_ids = {key: i for i, key in enumerate(methods)}
+        node_count = len(methods)
+        adjacency = {i: [] for i in range(node_count)}
+        features = {}
+
+        for key, method in methods.items():
+            i = method_ids[key]
+            feats, internal_calls = extract_method_features(method, pkg)
+            for callee_key in internal_calls:
+                if callee_key in method_ids:
+                    adjacency[i].append(method_ids[callee_key])
+            features[i] = feats
+
+        in_deg = {i: 0 for i in range(node_count)}
+        for src, targets in adjacency.items():
+            for tgt in targets:
+                in_deg[tgt] += 1
+        for i in range(node_count):
+            features[i]['in_degree'] = in_deg[i]
+
+        graph_data[pkg] = (adjacency, features)
+
+    return graph_data, pkgs
+
+
+def _build_neighborhoods(adj):
+    neigh = {n: [] for n in adj}
+    for src, targets in adj.items():
+        for tgt in targets:
+            if tgt not in neigh[src]:
+                neigh[src].append(tgt)
+            if src not in neigh[tgt]:
+                neigh[tgt].append(src)
+    return neigh
+
+
+def _wl_refine(neigh, labels):
+    new_labels = {}
+    for v in labels:
+        nbrs = tuple(sorted(labels[n] for n in neigh.get(v, [])))
+        new_labels[v] = hash((labels[v], nbrs))
+    return new_labels
+
+
+def _wl_histograms(adj, features, n_iter):
+    neigh = _build_neighborhoods(adj)
+    labels = {i: tuple(features[i][k] for k in FEATURE_KEYS) for i in features}
+
+    hists = []
+    for it in range(n_iter + 1):
+        hists.append(Counter(labels.values()))
+        if it < n_iter:
+            labels = _wl_refine(neigh, labels)
+    return hists
+
+
+def wl_similarity(hists_a, hists_b):
+    cross = 0.0
+    self_a = 0.0
+    self_b = 0.0
+
+    for ha, hb in zip(hists_a, hists_b):
+        for l in set(ha.keys()) | set(hb.keys()):
+            ca = ha.get(l, 0)
+            cb = hb.get(l, 0)
+            cross += min(ca, cb)
+            self_a += ca
+            self_b += cb
+
+    denom = (self_a * self_b) ** 0.5
+    return cross / denom if denom > 0 else 0.0
+
+
+def compute_similarity_matrix(graph_data_old, graph_data_new, n_iter):
+    old_sigs = {}
+    for name, data in graph_data_old.items():
+        if data is not None:
+            old_sigs[name] = _wl_histograms(*data, n_iter)
+
+    new_sigs = {}
+    for name, data in graph_data_new.items():
+        if data is not None:
+            new_sigs[name] = _wl_histograms(*data, n_iter)
+
+    old_names = sorted(old_sigs.keys())
+    new_names = sorted(new_sigs.keys())
+
+    matrix = np.zeros((len(old_names), len(new_names)))
+    for i, on in enumerate(old_names):
+        hi_a = old_sigs[on]
+        for j, nn in enumerate(new_names):
+            matrix[i, j] = wl_similarity(hi_a, new_sigs[nn])
+
+    return matrix, old_names, new_names
+
+
+def match_packages(matrix, old_names, new_names, match_threshold, change_threshold):
+    results = []
+    used_new = set()
+
+    old_best = []
+    for i, on in enumerate(old_names):
+        best_j = -1
+        best_s = 0.0
+        for j in range(len(new_names)):
+            s = float(matrix[i, j])
+            if s > best_s:
+                best_s = s
+                best_j = j
+        old_best.append((on, best_j, best_s))
+
+    old_best.sort(key=lambda x: -x[2])
+
+    for on, best_j, best_s in old_best:
+        if best_j >= 0 and best_j not in used_new and best_s >= change_threshold:
+            used_new.add(best_j)
+            nn = new_names[best_j]
+            if best_s >= match_threshold:
+                status = 'MATCH'
+            else:
+                status = 'CHANGED'
+            results.append((on, nn, best_s, status))
+        else:
+            results.append((on, '---', 0.0, 'REMOVED'))
+
+    for j, nn in enumerate(new_names):
+        if j not in used_new:
+            results.append(('---', nn, 0.0, 'NEW'))
+
+    for name, data in graph_data_old.items():
+        if data is None:
+            if not any(r[0] == name for r in results):
+                results.append((name, '---', 0.0, 'REMOVED'))
+    for name, data in graph_data_new.items():
+        if data is None:
+            if not any(r[1] == name for r in results):
+                results.append(('---', name, 0.0, 'NEW'))
+
+    return results
+
+
+def format_score(score):
+    if score <= 0:
+        return '---'
+    return f'{score:.2f}'
+
+
+def print_table(results, old_pkgs, new_pkgs, show_details):
+    disp_rows = []
+    for old_name, new_name, score, status in results:
+        disp_rows.append((pkg_display(old_name), pkg_display(new_name),
+                          format_score(score), status))
+
+    col_widths = [
+        max(len(r[0]) for r in disp_rows),
+        max(len(r[1]) for r in disp_rows),
+        max(len(r[2]) for r in disp_rows),
+        max(len(r[3]) for r in disp_rows),
+    ]
+    headers = ['Package (old)', 'Package (new)', 'Score', 'Status']
+    col_widths = [max(w, len(h)) for w, h in zip(col_widths, headers)]
+
+    sep = '  '
+    fmt = f'{{:<{col_widths[0]}}}{sep}{{:<{col_widths[1]}}}{sep}{{:>{col_widths[2]}}}{sep}{{:<{col_widths[3]}}}'
+
+    print(fmt.format(*headers))
+    print('-' * (sum(col_widths) + len(sep) * 3))
+    for r in disp_rows:
+        print(fmt.format(*r))
+
+    if show_details:
+        detail_lines = []
+        for old_name, new_name, score, status in results:
+            if status == 'REMOVED':
+                detail_lines.append((old_name, '---', 'removed'))
+            elif status == 'NEW':
+                detail_lines.append(('---', new_name, 'added'))
+            else:
+                old_classes = old_pkgs.get(old_name, [])
+                new_classes = new_pkgs.get(new_name, [])
+                old_m = sum(len(c.methods) for c in old_classes)
+                new_m = sum(len(c.methods) for c in new_classes)
+                detail_lines.append((
+                    old_name, new_name,
+                    f'methods {old_m}->{new_m} | score={format_score(score)}',
+                ))
+
+        detail_groups = defaultdict(list)
+        for old_n, new_n, line in detail_lines:
+            if line.startswith('removed'):
+                detail_groups['REMOVED'].append((old_n, line))
+            elif line.startswith('added'):
+                detail_groups['NEW'].append((new_n, line))
+            else:
+                detail_groups['MATCHED'].append((old_n, new_n, line))
+
+        for section in ('MATCHED', 'REMOVED', 'NEW'):
+            entries = detail_groups.get(section)
+            if not entries:
+                continue
+            print()
+            print(f'--- {section} ---')
+            for entry in entries:
+                if section == 'MATCHED':
+                    old_n, new_n, line = entry
+                    print(f'  {pkg_display(old_n)}  <->  {pkg_display(new_n)}  ({line})')
+                elif section == 'REMOVED':
+                    old_n, line = entry
+                    print(f'  {pkg_display(old_n)}  ({line})')
+                elif section == 'NEW':
+                    new_n, line = entry
+                    print(f'  {pkg_display(new_n)}  ({line})')
+
+
+def print_csv(results, old_pkgs, new_pkgs, show_details):
+    writer = csv.writer(sys.stdout, lineterminator='\n')
+    cols = ['old_package', 'new_package', 'score', 'status']
+    if show_details:
+        cols.append('details')
+    writer.writerow(cols)
+
+    for old_name, new_name, score, status in results:
+        row = [pkg_display(old_name), pkg_display(new_name),
+               format_score(score), status]
+        if show_details:
+            if status == 'REMOVED':
+                row.append('removed')
+            elif status == 'NEW':
+                row.append('added')
+            else:
+                old_classes = old_pkgs.get(old_name, [])
+                new_classes = new_pkgs.get(new_name, [])
+                old_m = sum(len(c.methods) for c in old_classes)
+                new_m = sum(len(c.methods) for c in new_classes)
+                row.append(f'methods {old_m}->{new_m}')
+        writer.writerow(row)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Match packages across APK versions using call graph similarity '
+                    '(Weisfeiler-Lehman kernel).'
+    )
+    parser.add_argument('apk1', type=str, help='Version 1 (APK file)')
+    parser.add_argument('apk2', type=str, help='Version 2 (APK file)')
+    parser.add_argument('pkg', type=str, nargs='?', default=None,
+                        help='Package name to filter (requires --onlyapppackage)')
+    parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--onlyapppackage', '-P', dest='pkg_source',
+                        action='store_const', const='manual')
+    parser.add_argument('--include-unpackaged', '-U', action='store_true')
+    parser.add_argument('--exclude-lists', '-e', type=str, nargs='*')
+    parser.add_argument('--include-lists', '-i', type=str, nargs='*')
+    parser.add_argument('--skip-obfuscated', '-s', action='store_true')
+    parser.add_argument('--threshold', '-t', type=float, default=0.8,
+                        help='WL kernel similarity threshold for MATCH (default: 0.8)')
+    parser.add_argument('--change-threshold', type=float, default=0.0,
+                        help='Minimum similarity to be considered CHANGED '
+                             'rather than REMOVED/NEW (default: 0.0)')
+    parser.add_argument('--wl-iterations', type=int, default=3,
+                        help='Weisfeiler-Lehman refinement iterations (default: 3)')
+    parser.add_argument('--csv', action='store_true',
+                        help='Output in CSV format')
+    parser.add_argument('--show-details', '-d', action='store_true',
+                        help='Show method count deltas per match')
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.INFO)
+
+    filter_pkg = None
+    if args.pkg_source == 'manual':
+        if args.pkg is None:
+            parser.error('--onlyapppackage requires a package name argument.')
+        filter_pkg = args.pkg
+
+    try:
+        if args.verbose:
+            log.info('Parsing old APK: %s', args.apk1)
+        old, _ = SmaliProject.from_apk(
+            args.apk1, filter_pkg, skiplists=args.exclude_lists,
+            includelist=args.include_lists,
+            include_unpackaged=args.include_unpackaged,
+        )
+        if args.verbose:
+            log.info('Parsing new APK: %s', args.apk2)
+        new, _ = SmaliProject.from_apk(
+            args.apk2, filter_pkg, skiplists=args.exclude_lists,
+            includelist=args.include_lists,
+            include_unpackaged=args.include_unpackaged,
+        )
+
+        if args.skip_obfuscated:
+            removed_old = old.removeObfuscatedClasses()
+            removed_new = new.removeObfuscatedClasses()
+            if args.verbose:
+                log.info('Removed %d obfuscated classes from old, %d from new',
+                         removed_old, removed_new)
+
+        global graph_data_old, graph_data_new
+        if args.verbose:
+            log.info('Building call graphs...')
+        graph_data_old, old_pkgs = build_package_graphs(old)
+        graph_data_new, new_pkgs = build_package_graphs(new)
+
+        if args.verbose:
+            log.info('Computing similarity matrix (WL kernel, %d iterations)...',
+                     args.wl_iterations)
+        sim_matrix, old_names, new_names = compute_similarity_matrix(
+            graph_data_old, graph_data_new, args.wl_iterations,
+        )
+
+        if args.verbose:
+            log.info('Matching packages (match_threshold=%.2f, change_threshold=%.2f)...',
+                     args.threshold, args.change_threshold)
+        results = match_packages(sim_matrix, old_names, new_names,
+                                 args.threshold, args.change_threshold)
+
+        if args.csv:
+            print_csv(results, old_pkgs, new_pkgs, args.show_details)
+        else:
+            print_table(results, old_pkgs, new_pkgs, args.show_details)
+
+    except Exception as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
